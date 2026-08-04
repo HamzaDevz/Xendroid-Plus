@@ -1084,6 +1084,12 @@ struct SWIZZLE
       } else if (w0 == 3 && w1 == 0 && w2 == 1 && w3 == 2) {
         // Dword rotate by three (.wxyz).
         e.ext(VReg(d).b16, VReg(s).b16, VReg(s).b16, 12);
+      } else if (w0 == 0 && w1 == 1 && w2 == 0 && w3 == 1) {
+        // Broadcast low 64-bit half.
+        e.dup(VReg(d).d2, VReg(s).d2[0]);
+      } else if (w0 == 2 && w1 == 3 && w2 == 2 && w3 == 3) {
+        // Broadcast high 64-bit half.
+        e.dup(VReg(d).d2, VReg(s).d2[1]);
       } else {
         // General case: TBL.
         uint8_t ctrl[16];

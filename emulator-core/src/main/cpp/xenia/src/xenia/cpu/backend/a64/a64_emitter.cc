@@ -886,10 +886,10 @@ void A64Emitter::PushStackpoint() {
   ldr(w9, ptr(x19, static_cast<uint32_t>(
                        offsetof(A64BackendContext, current_stackpoint_depth))));
 
-  // Compute offset into array: x10 = w9 * sizeof(A64BackendStackpoint)
-  mov(w10, static_cast<uint32_t>(sizeof(A64BackendStackpoint)));
-  umull(x10, w9, w10);
-  add(x8, x8, x10);
+  // x8 += w9 * sizeof(A64BackendStackpoint) via scaled extended-register add.
+  static_assert(sizeof(A64BackendStackpoint) == 16,
+                "stackpoint indexing relies on a 16-byte element size");
+  add(x8, x8, w9, UXTW, 4);
 
   // Store host SP.
   mov(x10, sp);

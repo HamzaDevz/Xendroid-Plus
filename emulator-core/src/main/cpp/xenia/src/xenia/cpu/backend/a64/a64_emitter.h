@@ -194,6 +194,33 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
 
   bool near_branches() const { return near_branches_; }
 
+  // Single-instruction conditional branches for forward targets that are
+  // PROVABLY within range because the label is bound a bounded number of
+  // instructions later within the same sequence/helper emission (e.g.
+  // intra-sequence fast-path skips). Callers must guarantee the bound:
+  // ±1 MiB for b_near/cbz_near/cbnz_near. (In near_branches() mode the
+  // shadows above are direct already.)
+  void b_near(const Xbyak_aarch64::Cond cond,
+              const Xbyak_aarch64::Label& label) {
+    CodeGenerator::b(cond, label);
+  }
+  void cbz_near(const Xbyak_aarch64::WReg& rt,
+                const Xbyak_aarch64::Label& label) {
+    CodeGenerator::cbz(rt, label);
+  }
+  void cbz_near(const Xbyak_aarch64::XReg& rt,
+                const Xbyak_aarch64::Label& label) {
+    CodeGenerator::cbz(rt, label);
+  }
+  void cbnz_near(const Xbyak_aarch64::WReg& rt,
+                 const Xbyak_aarch64::Label& label) {
+    CodeGenerator::cbnz(rt, label);
+  }
+  void cbnz_near(const Xbyak_aarch64::XReg& rt,
+                 const Xbyak_aarch64::Label& label) {
+    CodeGenerator::cbnz(rt, label);
+  }
+
   // Get or create a xbyak_aarch64 label for a HIR label ID.
   Xbyak_aarch64::Label& GetLabel(uint32_t label_id);
 
