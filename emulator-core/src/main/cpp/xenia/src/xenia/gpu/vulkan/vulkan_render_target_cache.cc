@@ -3071,6 +3071,18 @@ bool VulkanRenderTargetCache::TryDirectHostResolveCopy(
       }
     } else if (!copy_shader_is_full_color) {
       return false;
+    } else if (copy_shader == draw_util::ResolveCopyShaderIndex::kFull8bpp &&
+               resolve_info.copy_dest_info.copy_dest_swap &&
+               xenos::ColorFormat(
+                   resolve_info.copy_dest_info.copy_dest_format) ==
+                   xenos::ColorFormat::k_8 &&
+               resolve_info.color_edram_info.msaa_samples >=
+                   xenos::MsaaSamples::k4X) {
+      // A8 (k_8 with LOW_BLUE) selects alpha. The 1x and 2x direct shaders
+      // load the scalar like the EDRAM path, but the 4x one is built from RGBA
+      // loads with the red/blue swap and would store blue, so leave it to the
+      // EDRAM path.
+      return false;
     }
   }
 
