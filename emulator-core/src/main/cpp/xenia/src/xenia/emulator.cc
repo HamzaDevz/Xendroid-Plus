@@ -314,31 +314,6 @@ X_STATUS Emulator::Setup(
   // logical processors.
   xe::threading::EnableAffinityConfiguration();
 
-#if XE_PLATFORM_LINUX
-  // Check if /dev/shm is mounted with noexec. The code cache uses shm_open
-  // with PROT_EXEC, which will fail with EPERM on noexec tmpfs mounts.
-  {
-    std::ifstream mounts("/proc/mounts");
-    std::string line;
-    while (std::getline(mounts, line)) {
-      if (line.find("/dev/shm") != std::string::npos &&
-          line.find("noexec") != std::string::npos) {
-        XELOGE(
-            "/dev/shm is mounted with noexec, which prevents the code cache "
-            "from allocating executable memory. Please remount it with: "
-            "sudo mount -o remount,exec /dev/shm");
-        xe::ShowSimpleMessageBox(
-            xe::SimpleMessageBoxType::Error,
-            "/dev/shm is mounted with noexec, which prevents Xenia from "
-            "allocating executable memory for the code cache.\n\n"
-            "Please remount it with:\n"
-            "  sudo mount -o remount,exec /dev/shm");
-        return X_STATUS_UNSUCCESSFUL;
-      }
-    }
-  }
-#endif
-
   XELOGI("{}: Initializing Memory...", __func__);
   // Create memory system first, as it is required for other systems.
   memory_ = std::make_unique<Memory>();
