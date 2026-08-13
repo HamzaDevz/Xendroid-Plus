@@ -7136,7 +7136,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
                 static_cast<uint32_t>(vfetch_constant.type));
             return false;
         }
-        vfetch_addresses[vfetch_current_queued] = vfetch_constant.address;
+        // Mask to physical like the shader - the guest may use a mirror window.
+        vfetch_addresses[vfetch_current_queued] =
+            xenos::CpuToGpu(vfetch_constant.address << 2) >> 2;
         vfetch_sizes[vfetch_current_queued++] = vfetch_constant.size;
       }
     }
@@ -7159,7 +7161,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
           xenos::xe_gpu_vertex_fetch_t vfetch_constant =
               regs.GetVertexFetch(i * 32 + j);
           if (vfetch_constant.type == xenos::FetchConstantType::kVertex) {
-            vfetch_addresses[vfetch_current_queued] = vfetch_constant.address;
+            vfetch_addresses[vfetch_current_queued] =
+                xenos::CpuToGpu(vfetch_constant.address << 2) >> 2;
             vfetch_sizes[vfetch_current_queued++] = vfetch_constant.size;
           }
         }
