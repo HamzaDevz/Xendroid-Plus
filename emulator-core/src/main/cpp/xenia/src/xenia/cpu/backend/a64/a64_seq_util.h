@@ -42,6 +42,7 @@ namespace backend {
 namespace a64 {
 
 using Xbyak_aarch64::QReg;
+using Xbyak_aarch64::SReg;
 using Xbyak_aarch64::VReg;
 using Xbyak_aarch64::WReg;
 using Xbyak_aarch64::XReg;
