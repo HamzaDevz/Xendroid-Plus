@@ -15,6 +15,8 @@
 #include <vector>
 
 #include "xenia/base/arena.h"
+#include "xenia/base/vec128.h"
+#include "xenia/cpu/backend/backend.h"
 #include "xenia/cpu/backend/code_cache_base.h"
 #include "xenia/cpu/function.h"
 #include "xenia/cpu/function_trace_data.h"
@@ -224,6 +226,9 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   // Get or create a xbyak_aarch64 label for a HIR label ID.
   Xbyak_aarch64::Label& GetLabel(uint32_t label_id);
 
+  // Get or create a pool slot for a v128 constant with no immediate form.
+  Xbyak_aarch64::Label& GetV128ConstLabel(const vec128_t& value);
+
   XexModule* GuestModule() { return guest_module_; }
 
  protected:
@@ -239,6 +244,11 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
             EmitFunctionInfo& func_info);
   // Whether a guest function has to be emitted again with long-range branches.
   bool IsNearBranchOutOfRange(const Xbyak_aarch64::Error& e) const;
+
+  // Emit the pending v128 literals, branching over them when code follows.
+  bool FlushV128ConstPool(bool branch_over);
+  // Plant an island, only safe where a branch and data cannot split a sequence.
+  bool MaybeFlushV128ConstPool();
 
  protected:
   Processor* processor_ = nullptr;
@@ -266,6 +276,11 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
 
   std::vector<TailEmitter> tail_code_;
   std::vector<Xbyak_aarch64::Label*> label_cache_;
+
+  // v128 constants needing a literal, with labels owned by label_cache_.
+  std::vector<std::pair<vec128_t, Xbyak_aarch64::Label*>> v128_consts_;
+  // Code offset of the ldr that opened the pending pool.
+  size_t v128_consts_first_use_ = 0;
 
   // Map from HIR label IDs to xbyak_aarch64 Labels.
   std::unordered_map<uint32_t, Xbyak_aarch64::Label*> label_map_;
