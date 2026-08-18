@@ -763,8 +763,9 @@ struct VECTOR_ROTATE_LEFT_V128
     : Sequence<VECTOR_ROTATE_LEFT_V128,
                I<OPCODE_VECTOR_ROTATE_LEFT, V128Op, V128Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
-    int s1 = SrcVReg(e, i.src1, 0);
-    int s2 = SrcVReg(e, i.src2, 1);
+    // v0 is rebuilt after src2's last read but before src1's.
+    int s1 = SrcVReg(e, i.src1, 1);
+    int s2 = SrcVReg(e, i.src2, 0);
     int d = i.dest.reg().getIdx();
     // rotate = (src << amt) | (src >> (width - amt))
     switch (i.instr->flags) {
@@ -862,7 +863,8 @@ struct VECTOR_DENORMFLUSH
     : Sequence<VECTOR_DENORMFLUSH,
                I<OPCODE_VECTOR_DENORMFLUSH, V128Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
-    int s = SrcVReg(e, i.src1, 0);
+    // src is read after v0 and v1 are rebuilt, so a constant lands in v3.
+    int s = SrcVReg(e, i.src1, 3);
     int d = i.dest.reg().getIdx();
     // Consumers are VMX-mode float ops, which run under FPCR.FZ and so
     // flush denormals in hardware.
