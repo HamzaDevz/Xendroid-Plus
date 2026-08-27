@@ -149,8 +149,10 @@ bool CreateEmptyFile(const std::filesystem::path& path) {
 
 class PosixFileHandle : public FileHandle {
  public:
-  PosixFileHandle(std::filesystem::path path, int handle)
-      : FileHandle(std::move(path)), handle_(handle) {}
+  PosixFileHandle(std::filesystem::path path, int handle, bool append_only)
+      : FileHandle(std::move(path)),
+        handle_(handle),
+        append_only_(append_only) {}
   ~PosixFileHandle() override {
     close(handle_);
     handle_ = -1;
@@ -168,7 +170,9 @@ class PosixFileHandle : public FileHandle {
   }
   bool Write(size_t file_offset, const void* buffer, size_t buffer_length,
              size_t* out_bytes_written) override {
-    ssize_t out = pwrite(handle_, buffer, buffer_length, file_offset);
+    ssize_t out = append_only_
+                      ? write(handle_, buffer, buffer_length)
+                      : pwrite(handle_, buffer, buffer_length, file_offset);
     if (out >= 0) {
       *out_bytes_written = out;
       return true;
@@ -184,6 +188,7 @@ class PosixFileHandle : public FileHandle {
 
  private:
   int handle_ = -1;
+  bool append_only_ = false;
 };
 
 std::unique_ptr<FileHandle> FileHandle::OpenExisting(
@@ -196,7 +201,7 @@ std::unique_ptr<FileHandle> FileHandle::OpenExisting(
                         FileAccess::kGenericExecute | FileAccess::kGenericAll);
   const bool wants_write =
       desired_access & (FileAccess::kGenericWrite | FileAccess::kFileWriteData |
-                        FileAccess::kGenericAll);
+                        FileAccess::kFileAppendData | FileAccess::kGenericAll);
   int open_access;
   if (wants_read && wants_write) {
     open_access = O_RDWR;
@@ -205,7 +210,12 @@ std::unique_ptr<FileHandle> FileHandle::OpenExisting(
   } else {
     open_access = O_RDONLY;
   }
-  if (desired_access & FileAccess::kFileAppendData) {
+  // pwrite(2) ignores the offset on an O_APPEND descriptor.
+  const bool append_only = (desired_access & FileAccess::kFileAppendData) &&
+                           !(desired_access & (FileAccess::kGenericWrite |
+                                               FileAccess::kFileWriteData |
+                                               FileAccess::kGenericAll));
+  if (append_only) {
     open_access |= O_APPEND;
   }
   int handle = open(path.c_str(), open_access);
@@ -213,7 +223,7 @@ std::unique_ptr<FileHandle> FileHandle::OpenExisting(
     // TODO(benvanik): pick correct response.
     return nullptr;
   }
-  return std::make_unique<PosixFileHandle>(path, handle);
+  return std::make_unique<PosixFileHandle>(path, handle, append_only);
 }
 
 std::optional<FileInfo> GetInfo(const std::filesystem::path& path) {
