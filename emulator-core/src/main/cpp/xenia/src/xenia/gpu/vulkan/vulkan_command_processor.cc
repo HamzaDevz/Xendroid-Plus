@@ -6941,7 +6941,13 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       host_render_targets_used, pixel_shader && pixel_shader->writes_depth());
   gviargs.SetupRegisterValues(regs);
 
-  draw_util::GetHostViewportInfo(&gviargs, viewport_info);
+  if (gviargs == previous_viewport_info_args_) {
+    viewport_info = previous_viewport_info_;
+  } else {
+    draw_util::GetHostViewportInfo(&gviargs, viewport_info);
+    previous_viewport_info_args_ = gviargs;
+    previous_viewport_info_ = viewport_info;
+  }
   // vulkan_shading_rate: coarse shading of the multisampled scene's draws,
   // where the rate is allowed with what the pixel shader writes.
   draw_shading_rate_ = 0;
