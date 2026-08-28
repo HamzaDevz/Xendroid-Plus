@@ -269,9 +269,12 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, size_t stack_size,
     while (instr) {
       // After a guest call, check for longjmp on the next real instruction.
       // Skip SOURCE_OFFSET because the return address from the call would
-      // point past the check, so it would never execute.
+      // point past the check, so it would never execute. With debug info on a
+      // COMMENT precedes the SOURCE_OFFSET, so skip that too.
       if (synchronize_stack_on_next_instruction_) {
-        if (instr->GetOpcodeNum() != hir::OPCODE_SOURCE_OFFSET) {
+        const hir::Opcode opcode_num = instr->GetOpcodeNum();
+        if (opcode_num != hir::OPCODE_SOURCE_OFFSET &&
+            opcode_num != hir::OPCODE_COMMENT) {
           synchronize_stack_on_next_instruction_ = false;
           EnsureSynchronizedGuestAndHostStack();
         }
