@@ -212,12 +212,15 @@ class ContentPackage {
   // Ends in a separator, so it prefixes only this package's entries.
   const std::string& device_path() const { return device_path_; }
 
+  bool is_mounted() const { return mounted_; }
+
  private:
   KernelState* kernel_state_;
   std::string root_name_;
   std::string device_path_;
   XCONTENT_AGGREGATE_DATA content_data_;
   uint32_t license_;
+  bool mounted_ = false;
 };
 
 class ContentManager {
