@@ -296,9 +296,9 @@ XE_NOINLINE
 XE_NOALIAS
 int32_t GetTiledOffset3D(int32_t x, int32_t y, int32_t z, uint32_t pitch,
                          uint32_t height, uint32_t bytes_per_block_log2);
-// Because (0, 0, 0) within each 32x32x4-block tile is stored in memory first,
-// and the tiled address grows monotonically with Z/4, then Y/32, then X/32
-// blocks.
+// The tiled address grows monotonically between tiles with Z/4, then Y/32,
+// then X/32 blocks. Within 3D tiles, the bank swap in odd Z/4 groups makes
+// Y=8 the first stored row, not Y=0.
 inline uint32_t GetTiledAddressLowerBound2D(uint32_t left, uint32_t top,
                                             uint32_t pitch_aligned,
                                             uint32_t bytes_per_block_log2) {
@@ -312,10 +312,14 @@ inline uint64_t GetTiledAddressLowerBound3D(uint32_t left, uint32_t top,
                                             uint32_t pitch_aligned,
                                             uint32_t height_aligned,
                                             uint32_t bytes_per_block_log2) {
+  uint32_t front_aligned = front & ~(xenos::kTextureTileDepth - 1);
+  uint32_t top_aligned = top & ~(xenos::kTextureTileWidthHeight - 1);
+  if (front_aligned & xenos::kTextureTileDepth) {
+    top_aligned += 8;
+  }
   return uint64_t(texture_address::Tiled3D(
       int32_t(left & ~(xenos::kTextureTileWidthHeight - 1)),
-      int32_t(top & ~(xenos::kTextureTileWidthHeight - 1)),
-      int32_t(front & ~(xenos::kTextureTileDepth)), pitch_aligned,
+      int32_t(top_aligned), int32_t(front_aligned), pitch_aligned,
       height_aligned, bytes_per_block_log2));
 }
 // Supporting the right > pitch and bottom > height (in tiles) cases also, for
