@@ -53,6 +53,8 @@ DEFINE_bool(a64_enable_host_guest_stack_synchronization, true,
             "impact, but fixes crashes in games that use setjmp/longjmp.",
             "a64");
 
+DECLARE_bool(record_mmio_access_exceptions);
+
 DEFINE_bool(a64_fpu_nan_fixup, false,
             "Emulate PPC NaN propagation on scalar FPU arithmetic (add, sub, "
             "mul, div, fused multiply-add): the first NaN operand by "
@@ -894,6 +896,11 @@ A64Backend::~A64Backend() {
   }
 }
 
+static void ForwardMMIOAccessForRecording(void* context, void* hostaddr) {
+  reinterpret_cast<A64Backend*>(context)
+      ->RecordMMIOExceptionForGuestInstruction(hostaddr);
+}
+
 bool A64Backend::Initialize(Processor* processor) {
   if (!Backend::Initialize(processor)) {
     return false;
@@ -968,6 +975,14 @@ bool A64Backend::Initialize(Processor* processor) {
 
   // Register exception handler for MMIO access from JIT code.
   ExceptionHandler::Install(ExceptionCallbackThunk, this);
+
+  // Lets the memory system tell us which guest instructions faulted on MMIO,
+  // so they get recompiled into a direct call instead of taking the signal
+  // handler on every access.
+  if (cvars::record_mmio_access_exceptions) {
+    processor->memory()->SetMMIOExceptionRecordingCallback(
+        ForwardMMIOAccessForRecording, this);
+  }
 
   return true;
 }
