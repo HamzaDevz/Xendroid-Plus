@@ -86,6 +86,38 @@ class BuiltinModule : public Module {
   std::string name_;
 };
 
+class DynamicCodeModule : public Module {
+ public:
+  explicit DynamicCodeModule(Processor* processor)
+      : Module(processor), name_("dynamic") {}
+
+  const std::string& name() const override { return name_; }
+  bool is_executable() const override { return false; }
+
+  // User mode addresses alias physical memory, so ask about the kernel address.
+  bool ContainsAddress(uint32_t address) override {
+    const uint32_t kernel_address = Memory::UserModeKernelAddress(address);
+    auto heap = memory_->LookupHeap(kernel_address);
+    uint32_t protect = 0;
+    return heap && heap->QueryProtect(kernel_address, &protect) &&
+           (protect & kMemoryProtectRead);
+  }
+
+  const uint8_t* TranslateCode(uint32_t address) const override {
+    return memory_->TranslateVirtual<const uint8_t*>(
+        Memory::UserModeKernelAddress(address));
+  }
+
+ protected:
+  std::unique_ptr<Function> CreateFunction(uint32_t address) override {
+    return std::unique_ptr<Function>(
+        processor_->backend()->CreateGuestFunction(this, address));
+  }
+
+ private:
+  std::string name_;
+};
+
 Processor::Processor(xe::Memory* memory, ExportResolver* export_resolver)
     : memory_(memory), export_resolver_(export_resolver) {}
 
@@ -93,6 +125,7 @@ Processor::~Processor() {
   {
     auto global_lock = global_critical_region_.Acquire();
     modules_.clear();
+    dynamic_code_module_.reset();
   }
 
   frontend_.reset();
@@ -304,8 +337,20 @@ Module* Processor::LookupModule(uint32_t address) {
       return module.get();
     }
   }
+  if (dynamic_code_module_ && dynamic_code_module_->ContainsAddress(address)) {
+    return dynamic_code_module_.get();
+  }
   return nullptr;
 }
+
+void Processor::EnableDynamicCode() {
+  auto global_lock = global_critical_region_.Acquire();
+  if (!dynamic_code_module_) {
+    dynamic_code_module_ = std::make_unique<DynamicCodeModule>(this);
+  }
+  dynamic_code_enabled_.store(true, std::memory_order_relaxed);
+}
+
 Function* Processor::LookupFunction(uint32_t address) {
   // TODO(benvanik): fast reject invalid addresses/log errors.
 

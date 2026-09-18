@@ -1287,6 +1287,12 @@ bool XexModule::SetupLibraryImports(const std::string_view name,
 
     if (kernel_resolver) {
       kernel_export = kernel_resolver->GetExportByOrdinal(name, ordinal);
+      // A module that enters user mode runs guest code no module claims, and
+      // every call site has to be translated for it, so before precompiling.
+      if (kernel_export &&
+          std::strcmp(kernel_export->name, "KeCreateUserMode") == 0) {
+        processor_->EnableDynamicCode();
+      }
     } else if (user_module) {
       user_export_addr = user_module->GetProcAddressByOrdinal(ordinal);
     }

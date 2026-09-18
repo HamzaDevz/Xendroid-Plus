@@ -62,6 +62,13 @@ bool PPCScanner::Scan(GuestFunction* function, FunctionDebugInfo* debug_info) {
   bool in_block = false;
   bool starts_with_mfspr_lr = false;
   while (true) {
+    // Dynamic code is backed by whatever the guest committed, so stop rather
+    // than read past it. The first page holds the function start.
+    if (!(address & 0xFFF) && !module->ContainsAddress(address)) {
+      LOGPPC("function end {:08X} (outside the module)", address);
+      address -= 4;
+      break;
+    }
     uint32_t code = xe::load_and_swap<uint32_t>(module->TranslateCode(address));
 
     // If we fetched 0 assume that we somehow hit one of the awesome

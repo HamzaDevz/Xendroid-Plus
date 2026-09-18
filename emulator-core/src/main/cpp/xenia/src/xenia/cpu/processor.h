@@ -116,6 +116,16 @@ class Processor {
   SyscallHook syscall_hook() const { return syscall_hook_.load(); }
   void set_syscall_hook(SyscallHook hook) { syscall_hook_.store(hook); }
 
+  // Lets guest code run from committed memory that no module claims.
+  void EnableDynamicCode();
+  bool dynamic_code_enabled() const {
+    return dynamic_code_enabled_.load(std::memory_order_relaxed);
+  }
+  // Whether |module| holds the code that no module claims.
+  bool IsDynamicCodeModule(const Module* module) const {
+    return module && module == dynamic_code_module_.get();
+  }
+
   Function* QueryFunction(uint32_t address);
   std::vector<Function*> FindFunctionsWithAddress(uint32_t address);
   void RemoveFunctionByAddress(uint32_t address);
@@ -277,6 +287,9 @@ class Processor {
   std::vector<std::unique_ptr<Module>> modules_;
   Module* builtin_module_ = nullptr;
   uint32_t next_builtin_address_ = 0xFFFF0000u;
+  // Consulted after modules_, so a loaded module always takes precedence.
+  std::unique_ptr<Module> dynamic_code_module_;
+  std::atomic<bool> dynamic_code_enabled_{false};
   std::atomic<SyscallHook> syscall_hook_{nullptr};
 
   // Maps thread ID to state. Updated on thread create, and threads are never

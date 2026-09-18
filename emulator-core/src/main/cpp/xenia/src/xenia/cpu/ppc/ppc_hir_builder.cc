@@ -239,9 +239,11 @@ bool PPCHIRBuilder::TryInlineLeafCall(uint32_t target_address,
   }
 
   // Read through the module that owns the callee, as Emit reads its own
-  // function. A callee in another module is not inlined.
+  // function. A callee in another module is not inlined, and neither is code
+  // the guest wrote at run time, which a sweep may replace under its copy.
   Module* module = frontend_->processor()->LookupModule(target_address);
-  if (!module || module != function_->module()) {
+  if (!module || module != function_->module() ||
+      frontend_->processor()->IsDynamicCodeModule(module)) {
     return false;
   }
   // A plain `blr`. Recognised by encoding before decoding, so the scan below
