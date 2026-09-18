@@ -109,6 +109,16 @@ XThread::~XThread() {
 
   thread_.reset();
 
+  if (user_mode_) {
+    auto backend = emulator()->processor()->backend();
+    for (auto& user_fiber : user_mode_->fibers) {
+      backend->DestroyStackpointState(user_fiber->stackpoint_state);
+    }
+    backend->DestroyStackpointState(user_mode_->handler_stackpoint_state);
+    kernel_state()->memory()->SystemHeapFree(user_mode_->kframes);
+    user_mode_.reset();
+  }
+
   if (thread_state_) {
     delete thread_state_;
   }
