@@ -1000,10 +1000,7 @@ bool X64Emitter::ConstantFitsIn32Reg(uint64_t v) {
 void X64Emitter::MovMem64(const Xbyak::RegExp& addr, uint64_t v) {
   uint32_t lowpart = static_cast<uint32_t>(v);
   uint32_t highpart = static_cast<uint32_t>(v >> 32);
-  // check whether the constant coincidentally collides with our membase
-  if (v == (uintptr_t)processor()->memory()->virtual_membase()) {
-    mov(qword[addr], GetMembaseReg());
-  } else if ((v & ~0x7FFFFFFF) == 0) {
+  if ((v & ~0x7FFFFFFF) == 0) {
     // Fits under 31 bits, so just load using normal mov.
 
     mov(qword[addr], v);

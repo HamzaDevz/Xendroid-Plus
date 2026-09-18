@@ -13,6 +13,7 @@
 #include <cerrno>
 #include <cstring>
 #include <random>
+#include <type_traits>
 
 #if XE_PLATFORM_MAC
 #include <sys/mman.h>
@@ -183,6 +184,7 @@ Memory::~Memory() {
 
   // Unmap all views and close mapping.
   if (mapping_ != xe::memory::kFileMappingHandleInvalid) {
+    UnmapUserViews();
     UnmapViews();
     xe::memory::CloseFileMappingHandle(mapping_, file_name_);
     mapping_base_ = nullptr;
@@ -471,6 +473,46 @@ void Memory::UnmapViews() {
   }
 }
 
+bool Memory::MapUserViews(uint8_t* user_membase) {
+  // The alias replaces the raw physical view, which user mode cannot reach.
+  static_assert(xe::countof(map_info) ==
+                std::extent_v<decltype(Memory::user_views_)>);
+  uint64_t granularity_mask = ~uint64_t(system_allocation_granularity_ - 1);
+  size_t count = 0;
+  auto map = [&](uint64_t start, uint64_t end, uint64_t target) {
+    const size_t length = size_t(end - start + 1);
+    auto view = reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
+        mapping_, user_membase + start, length,
+        xe::memory::PageAccess::kReadWrite, target & granularity_mask));
+    user_views_[count++] = {view, length};
+    return view != nullptr;
+  };
+  // Physical memory, at the file offset the 0xA0000000 view starts from.
+  bool mapped =
+      map(kUserAliasBase, kUserAliasBase + kUserAliasSize - 1, 0x100000000ull);
+  for (size_t n = 0; mapped && n < xe::countof(map_info) - 1; n++) {
+    const uint64_t start = map_info[n].virtual_address_start;
+    uint64_t end = map_info[n].virtual_address_end;
+    if (start < kUserAliasBase) {
+      end = std::min(end, uint64_t(kUserAliasBase) - 1);
+    }
+    mapped = map(start, end, map_info[n].target_address);
+  }
+  if (!mapped) {
+    UnmapUserViews();
+  }
+  return mapped;
+}
+
+void Memory::UnmapUserViews() {
+  for (auto& view : user_views_) {
+    if (view.base) {
+      xe::memory::UnmapFileView(mapping_, view.base, view.length);
+    }
+    view = {};
+  }
+}
+
 void Memory::Reset() {
   heaps_.v00000000.Reset();
   heaps_.v40000000.Reset();
@@ -679,15 +721,24 @@ bool Memory::AccessViolationCallback(
   // Access via physical_membase_ is special, when need to bypass everything
   // (for instance, for a data provider to actually write the data) so only
   // triggering callbacks on virtual memory regions.
-  if (reinterpret_cast<size_t>(host_address) <
-          reinterpret_cast<size_t>(virtual_membase_) ||
-      reinterpret_cast<size_t>(host_address) >=
-          reinterpret_cast<size_t>(physical_membase_)) {
+  const size_t host = reinterpret_cast<size_t>(host_address);
+  const size_t user_membase = reinterpret_cast<size_t>(user_virtual_membase());
+  // The user mode views are mapped read-write and never protected again, so
+  // no watch, MMIO range or no-access page applies to them and they only fault
+  // where nothing is committed.
+  const bool user_mode = user_membase && host - user_membase < 0x100000000ull;
+  if (!user_mode && (host < reinterpret_cast<size_t>(virtual_membase_) ||
+                     host >= reinterpret_cast<size_t>(physical_membase_))) {
     return false;
   }
-  uint32_t virtual_address = HostToGuestVirtual(host_address);
+  uint32_t virtual_address =
+      user_mode ? UserModeKernelAddress(HostToGuestVirtual(
+                      virtual_membase_ + (host - user_membase)))
+                : HostToGuestVirtual(host_address);
   BaseHeap* heap = LookupHeap(virtual_address);
-  if (heap->heap_type() != HeapType::kGuestPhysical) {
+  // POSIX views read zero where nothing is committed, so the user mode views,
+  // never protected, have nothing to report here.
+  if (user_mode || !heap || heap->heap_type() != HeapType::kGuestPhysical) {
     return false;
   }
 
@@ -811,6 +862,32 @@ void Memory::SystemHeapFree(uint32_t address, uint32_t* out_region_size) {
   // TODO(benvanik): lightweight pool.
   auto heap = LookupHeap(address);
   heap->Release(address, out_region_size);
+}
+
+bool Memory::EnableUserModeViews() {
+  auto global_lock = global_critical_region_.Acquire();
+  if (user_virtual_membase()) {
+    return true;
+  }
+  const uint64_t layout_end = reinterpret_cast<uint64_t>(physical_membase_) +
+                              0x20000000ull + system_allocation_granularity_;
+  // Low 32 bits clear like the kernel membase, which the JIT may rely on.
+  for (uint64_t base = xe::round_up(layout_end, 1ull << 32);
+       base < (1ull << 47); base += 1ull << 32) {
+    if (MapUserViews(reinterpret_cast<uint8_t*>(base))) {
+      user_virtual_membase_.store(reinterpret_cast<uint8_t*>(base),
+                                  std::memory_order_relaxed);
+      break;
+    }
+  }
+  if (!user_virtual_membase()) {
+    XELOGE("Memory: unable to map the user mode address space");
+    return false;
+  }
+  mmio_handler_->SetUserMembase(user_virtual_membase());
+  XELOGI("Memory: user mode virtual membase {}",
+         static_cast<void*>(user_virtual_membase()));
+  return true;
 }
 
 void Memory::DumpMap() {
