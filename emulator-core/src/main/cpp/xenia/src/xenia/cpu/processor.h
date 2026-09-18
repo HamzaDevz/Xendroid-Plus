@@ -10,6 +10,7 @@
 #ifndef XENIA_CPU_PROCESSOR_H_
 #define XENIA_CPU_PROCESSOR_H_
 
+#include <atomic>
 #include <map>
 #include <memory>
 #include <string>
@@ -109,6 +110,11 @@ class Processor {
   Function* DefineBuiltin(const std::string_view name,
                           BuiltinFunction::Handler handler, void* arg0,
                           void* arg1);
+
+  // Runs for a guest sc before the default handling, true if it handled it.
+  using SyscallHook = bool (*)(ppc::PPCContext* context);
+  SyscallHook syscall_hook() const { return syscall_hook_.load(); }
+  void set_syscall_hook(SyscallHook hook) { syscall_hook_.store(hook); }
 
   Function* QueryFunction(uint32_t address);
   std::vector<Function*> FindFunctionsWithAddress(uint32_t address);
@@ -271,6 +277,7 @@ class Processor {
   std::vector<std::unique_ptr<Module>> modules_;
   Module* builtin_module_ = nullptr;
   uint32_t next_builtin_address_ = 0xFFFF0000u;
+  std::atomic<SyscallHook> syscall_hook_{nullptr};
 
   // Maps thread ID to state. Updated on thread create, and threads are never
   // removed. Must be guarded with the global lock.
