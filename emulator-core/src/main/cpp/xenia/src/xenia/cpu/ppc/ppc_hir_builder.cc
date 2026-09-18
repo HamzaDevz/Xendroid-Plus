@@ -104,7 +104,7 @@ void PPCHIRBuilder::Reset() {
 bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
   SCOPE_profile_cpu_f("cpu");
 
-  Memory* memory = frontend_->memory();
+  Module* module = function->module();
 
   function_ = function;
   start_address_ = function_->address();
@@ -141,8 +141,7 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
   for (uint32_t address = start_address, offset = 0; address <= end_address;
        address += 4, offset++) {
     trace_info_.dest_count = 0;
-    uint32_t code =
-        xe::load_and_swap<uint32_t>(memory->TranslateVirtual(address));
+    uint32_t code = xe::load_and_swap<uint32_t>(module->TranslateCode(address));
     auto opcode = LookupOpcode(code);
     auto& opcode_info = GetOpcodeInfo(opcode);
 
@@ -239,7 +238,12 @@ bool PPCHIRBuilder::TryInlineLeafCall(uint32_t target_address,
     }
   }
 
-  Memory* memory = frontend_->memory();
+  // Read through the module that owns the callee, as Emit reads its own
+  // function. A callee in another module is not inlined.
+  Module* module = frontend_->processor()->LookupModule(target_address);
+  if (!module || module != function_->module()) {
+    return false;
+  }
   // A plain `blr`. Recognised by encoding before decoding, so the scan below
   // can reject the whole branch/trap/syscall group without special cases.
   constexpr uint32_t kBlr = 0x4E800020;
@@ -253,7 +257,10 @@ bool PPCHIRBuilder::TryInlineLeafCall(uint32_t target_address,
       if (body_count > cvars::inline_leaf_max_instructions) {
         return false;
       }
-      uint8_t* ptr = memory->TranslateVirtual(address);
+      if (!module->ContainsAddress(address)) {
+        return false;
+      }
+      const uint8_t* ptr = module->TranslateCode(address);
       if (!ptr) {
         return false;
       }
@@ -300,7 +307,7 @@ bool PPCHIRBuilder::TryInlineLeafCall(uint32_t target_address,
   uint32_t address = target_address;
   for (uint32_t n = 0; n < body_count; ++n, address += 4) {
     trace_info_.dest_count = 0;
-    uint32_t code = xe::load_and_swap<uint32_t>(memory->TranslateVirtual(address));
+    uint32_t code = xe::load_and_swap<uint32_t>(module->TranslateCode(address));
     auto opcode = LookupOpcode(code);
     const auto& opcode_info = GetOpcodeInfo(opcode);
     if (opcode_info.type == PPCOpcodeType::kSync) {
