@@ -758,8 +758,8 @@ const object_ref<UserModule> KernelState::LoadTitleUpdate(
   X_RESULT open_status = content_manager()->OpenContent(
       "UPDATE", 0, *title_update, content_license, disc_number);
 
-  std::string mount_path = "";
-  if (!file_system()->FindSymbolicLink(kDefaultGameSymbolicLink, mount_path)) {
+  const std::string& mount_path = title_mount_path_;
+  if (mount_path.empty()) {
     return nullptr;
   }
 

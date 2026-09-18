@@ -619,6 +619,7 @@ X_STATUS Emulator::MountPath(const std::filesystem::path& path,
   // Create symlinks to the device.
   file_system_->RegisterSymbolicLink(kDefaultGameSymbolicLink, mount_path);
   file_system_->RegisterSymbolicLink(kDefaultPartitionSymbolicLink, mount_path);
+  kernel_state_->title_mount_path_ = mount_path;
 
   return X_STATUS_SUCCESS;
 }
@@ -2308,14 +2309,11 @@ std::string Emulator::RemountAndResolveLaunchPath(
   std::replace(normalized_path.begin(), normalized_path.end(), '\\', '/');
 #endif
 
-  // Get the current game:\ symbolic link path
-  std::string symbolic_link_path;
-  if (!kernel_state_->file_system()->FindSymbolicLink(kDefaultGameSymbolicLink,
-                                                      symbolic_link_path)) {
+  if (kernel_state_->title_mount_path_.empty()) {
     return "";
   }
 
-  std::filesystem::path file_path = symbolic_link_path;
+  std::filesystem::path file_path = kernel_state_->title_mount_path_;
 
   // Remove previous symbolic links.
   // Some titles can provide root within specific directory.
@@ -2331,6 +2329,8 @@ std::string Emulator::RemountAndResolveLaunchPath(
       kDefaultPartitionSymbolicLink, xe::path_to_utf8(file_path.parent_path()));
   kernel_state_->file_system()->RegisterSymbolicLink(
       kDefaultGameSymbolicLink, xe::path_to_utf8(file_path.parent_path()));
+  kernel_state_->title_mount_path_ = xe::utf8::canonicalize_guest_path(
+      xe::path_to_utf8(file_path.parent_path()));
 
   return xe::path_to_utf8(file_path);
 }

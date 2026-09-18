@@ -125,9 +125,7 @@ dword_result_t xeXamContentResolve(
         root_device_path = "\\Device\\Harddisk0\\Partition1\\Content\\";
       } else if (content_data.device_id ==
                  static_cast<uint32_t>(DummyDeviceId::ODD)) {
-        // Or GAME, but D: usually means DVD drive meanwhile GAME always
-        // pinpoints to game, even if it is running from HDD
-        root_device_path = "D:\\content\\";
+        root_device_path = kernel_state()->title_mount_path_ + "\\content\\";
       } else {
         return X_ERROR_INVALID_PARAMETER;
       }
@@ -1018,7 +1016,8 @@ dword_result_t XamContentLaunchImageInternal_entry(lpvoid_t content_data_ptr,
   // This should be done via content_manager, however as it isn't capable of
   // such action we need to improvise.
   const std::string package_path =
-      fmt::format("GAME:/Content/0000000000000000/{:08X}/{:08X}/{}", title_id,
+      fmt::format("{}/Content/0000000000000000/{:08X}/{:08X}/{}",
+                  kernel_state()->title_mount_path_, title_id,
                   static_cast<uint32_t>(content_data.content_type.get()),
                   content_data.file_name());
 

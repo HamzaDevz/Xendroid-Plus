@@ -249,12 +249,11 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContentODD(
   auto content_type_str =
       fmt::format("{:08X}", static_cast<uint32_t>(content_type));
 
-  const std::filesystem::path game_content_path =
-      std::filesystem::path(kDefaultGameSymbolicLink) / "content" / xuid_str /
-      title_id_str / content_type_str;
+  const std::string game_content_path =
+      fmt::format("{}\\content\\{}\\{}\\{}", kernel_state_->title_mount_path_,
+                  xuid_str, title_id_str, content_type_str);
 
-  auto entry = kernel_state_->file_system()->ResolvePath(
-      xe::path_to_utf8(game_content_path));
+  auto entry = kernel_state_->file_system()->ResolvePath(game_content_path);
 
   if (!entry) {
     return {};
