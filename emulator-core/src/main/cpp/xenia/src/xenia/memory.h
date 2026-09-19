@@ -656,6 +656,12 @@ class Memory {
                ? user_address + 0x80000000
                : user_address;
   }
+  // The inverse of UserModeKernelAddress.
+  static uint32_t KernelModeUserAddress(uint32_t kernel_address) {
+    return kernel_address - 0xA0000000 < kUserAliasSize
+               ? kernel_address - 0x80000000
+               : kernel_address;
+  }
 
   // Gets the heap for the address space containing the given address.
   XE_NOALIAS

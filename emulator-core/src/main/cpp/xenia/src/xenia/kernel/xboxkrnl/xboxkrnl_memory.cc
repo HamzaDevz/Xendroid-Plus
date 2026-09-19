@@ -901,6 +901,33 @@ dword_result_t MmIsAddressValid_entry(dword_t address,
 
 DECLARE_XBOXKRNL_EXPORT1(MmIsAddressValid, kMemory, kImplemented);
 
+// A guest that writes code sweeps the instruction cache before running it, so
+// this is where anything already compiled from that memory has to be dropped.
+void KeSweepIcacheRange_entry(lpvoid_t address, dword_t length,
+                              const ppc_context_t& ctx) {
+  auto processor = ctx->processor;
+  // Only a title that compiles code at run time (a module importing
+  // KeCreateUserMode) can have changed what was compiled; for the others a
+  // sweep would only throw away good code.
+  if (!processor->dynamic_code_enabled()) {
+    return;
+  }
+  const uint32_t start = address.guest_address();
+  processor->InvalidateCodeRange(start, length);
+  // Code is written through whichever address space the writer runs in and
+  // run from the other, so the range has to be forgotten under both names.
+  const uint32_t kernel_start = xe::Memory::UserModeKernelAddress(start);
+  if (kernel_start != start) {
+    processor->InvalidateCodeRange(kernel_start, length);
+  }
+  const uint32_t user_start = xe::Memory::KernelModeUserAddress(start);
+  if (user_start != start) {
+    processor->InvalidateCodeRange(user_start, length);
+  }
+}
+DECLARE_XBOXKRNL_EXPORT2(KeSweepIcacheRange, kMemory, kImplemented,
+                         kHighFrequency);
+
 }  // namespace xboxkrnl
 }  // namespace kernel
 }  // namespace xe

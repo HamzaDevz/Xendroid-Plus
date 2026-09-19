@@ -287,6 +287,22 @@ void Processor::RemoveFunctionByAddress(uint32_t address) {
   entry_table_.Delete(address);
 }
 
+void Processor::InvalidateCodeRange(uint32_t address, uint32_t length) {
+  if (!length) {
+    return;
+  }
+  const uint32_t end = address + length - 1;
+  auto global_lock = global_critical_region_.Acquire();
+  for (Function* function : entry_table_.DeleteRange(address, end)) {
+    // The entry is what a call looks up, but the module would hand back the
+    // same already defined symbol and never compile the new code.
+    if (function && function->module()) {
+      function->module()->ForgetSymbol(function->address());
+    }
+  }
+  backend_->InvalidateDynamicCalls(address, end);
+}
+
 Function* Processor::ResolveFunction(uint32_t address) {
   Entry* entry;
   Entry::Status status = entry_table_.GetOrCreate(address, &entry);

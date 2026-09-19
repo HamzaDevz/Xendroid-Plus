@@ -9,6 +9,7 @@
 
 #include "xenia/cpu/backend/a64/a64_backend.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstring>
@@ -1325,11 +1326,13 @@ static uint64_t ResolveDynamicFunction(void* raw_context,
   auto backend = static_cast<A64Backend*>(guest_context->processor->backend());
   auto bctx = backend->BackendContextForGuestContext(raw_context);
   if (!bctx->dynamic_call_cache) {
-    bctx->dynamic_call_cache =
-        new A64DynamicCallCacheEntry[kA64DynamicCallCacheSize];
+    auto cache = new A64DynamicCallCacheEntry[kA64DynamicCallCacheSize];
     for (uint32_t i = 0; i < kA64DynamicCallCacheSize; ++i) {
-      bctx->dynamic_call_cache[i] = {UINT32_MAX, 0, 0};
+      cache[i] = {UINT32_MAX, 0, 0};
     }
+    // Published filled, under the lock InvalidateDynamicCalls walks it with.
+    auto global_lock = xe::global_critical_region::Acquire();
+    bctx->dynamic_call_cache = cache;
   }
   // A return resolves to an address that is only valid for the unwind that
   // reached it, and caching the site would skip that unwind on every later
@@ -1629,6 +1632,10 @@ void A64Backend::InitializeBackendContext(void* ctx) {
 
   a64_ctx->stackpoints = AllocStackpoints();
   a64_ctx->dynamic_call_cache = nullptr;
+  {
+    auto global_lock = global_critical_region_.Acquire();
+    backend_contexts_.push_back(ctx);
+  }
 
   // Reset the live host FPCR for a fresh PPC context so one test's rounding
   // state does not leak into the next on the shared PPC test runner thread.
@@ -1641,8 +1648,31 @@ void A64Backend::DeinitializeBackendContext(void* ctx) {
     delete[] a64_ctx->stackpoints;
     a64_ctx->stackpoints = nullptr;
   }
+  auto global_lock = global_critical_region_.Acquire();
+  backend_contexts_.erase(
+      std::remove(backend_contexts_.begin(), backend_contexts_.end(), ctx),
+      backend_contexts_.end());
+  // InvalidateDynamicCalls walks a registered context's cache under the lock.
   delete[] a64_ctx->dynamic_call_cache;
   a64_ctx->dynamic_call_cache = nullptr;
+}
+
+void A64Backend::InvalidateDynamicCalls(uint32_t start, uint32_t end) {
+  auto global_lock = global_critical_region_.Acquire();
+  for (void* ctx : backend_contexts_) {
+    A64BackendContext* a64_ctx = BackendContextForGuestContext(ctx);
+    if (!a64_ctx->dynamic_call_cache) {
+      continue;
+    }
+    for (uint32_t i = 0; i < kA64DynamicCallCacheSize; ++i) {
+      auto& entry = a64_ctx->dynamic_call_cache[i];
+      if (entry.guest_address >= start && entry.guest_address <= end) {
+        // The lookup only rejects an entry whose host address is zero.
+        entry.host_address = 0;
+        entry.guest_address = UINT32_MAX;
+      }
+    }
+  }
 }
 
 void A64Backend::PrepareForReentry(void* ctx) {
