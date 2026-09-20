@@ -59,6 +59,9 @@ using namespace Xbyak_aarch64;
 
 // Defined in a64_backend.cc.
 extern uint64_t ResolveFunction(void* raw_context, uint64_t target_address);
+extern uint64_t ResolveDynamicCall(void* raw_context, uint64_t target_address);
+extern uint64_t ResolveDynamicTailCall(void* raw_context,
+                                       uint64_t target_address);
 
 static uint64_t UndefinedCallExtern(void* raw_context, uint64_t function_ptr) {
   auto function = reinterpret_cast<Function*>(function_ptr);
@@ -606,7 +609,8 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
     return;
   }
 
-  if (code_cache_->has_indirection_table()) {
+  if (code_cache_->has_indirection_table() &&
+      code_cache_->HasIndirectionSlot(function->address())) {
     // Must leave the guest address in w16 for the resolve thunk to read.
     mov(w16, function->address());
     if (!code_cache_->encoded_indirection()) {
@@ -642,6 +646,9 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
 
       L(indirection_ready);
     }
+  } else if (code_cache_->has_indirection_table()) {
+    mov(w16, function->address());
+    EmitDynamicCallLookup((instr->flags & hir::CALL_TAIL) != 0);
   } else {
     // No indirection table: resolve at runtime.
     mov(x0, x20);  // context
@@ -687,6 +694,26 @@ void A64Emitter::CallIndirect(const hir::Instr* instr, int reg_index) {
     if (target_w.getIdx() != w16.getIdx()) {
       mov(w16, target_w);
     }
+    // A target without an indirection slot goes through the dynamic call cache.
+    // Only dynamic code has such targets, and the check costs code cache space
+    // at every indirect call site, so titles without it do not pay for it.
+    Label* target_ready = nullptr;
+    if (processor()->dynamic_code_enabled()) {
+      target_ready = &NewCachedLabel();
+      // TODO(has207): while the base is 0x80000000, eor with it gives the same
+      // branch outcome in one instruction. Needs a static_assert on the base.
+      mov(w14, code_cache_->indirection_guest_base());
+      sub(w14, w16, w14);
+      mov(w15, code_cache_->indirection_guest_size());
+      cmp(w14, w15);
+      const bool tail_call = (instr->flags & hir::CALL_TAIL) != 0;
+      Label& resolve_natively =
+          AddToTail([target_ready, tail_call](A64Emitter& e, Label& lbl) {
+            e.EmitDynamicCallLookup(tail_call);
+            e.b(*target_ready);
+          });
+      b(HS, resolve_natively);
+    }
     if (!code_cache_->encoded_indirection()) {
       // Fast path: table mapped at host VA == guest addr; slot holds raw
       // 32-bit host target.
@@ -719,6 +746,9 @@ void A64Emitter::CallIndirect(const hir::Instr* instr, int reg_index) {
       ldr(x9, ptr(x14, static_cast<uint32_t>(0)));
 
       L(indirection_ready);
+    }
+    if (target_ready) {
+      L(*target_ready);
     }
   } else {
     // No indirection table: resolve at runtime.
@@ -814,6 +844,37 @@ void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
     mov(x1, reinterpret_cast<uint64_t>(function));
     CallNativeSafe(reinterpret_cast<void*>(&UndefinedCallExtern));
   }
+}
+
+void A64Emitter::EmitDynamicCallLookup(bool tail) {
+  Label miss;
+  Label done;
+  ldr(x14, ptr(x19, static_cast<uint32_t>(
+                        offsetof(A64BackendContext, dynamic_call_cache))));
+  cbz(x14, miss);
+  // Mirrors DynamicCallCacheIndex, which writes the entries this probes.
+  lsr(w15, w16, 2);
+  eor(w15, w15, w16, LSR, 14);
+  and_(w15, w15, kA64DynamicCallCacheSize - 1);
+  add(x14, x14, w15, UXTW, 4);
+  ldr(w15, ptr(x14, static_cast<uint32_t>(
+                        offsetof(A64DynamicCallCacheEntry, guest_address))));
+  cmp(w15, w16);
+  b(NE, miss);
+  ldr(x9, ptr(x14, static_cast<uint32_t>(
+                       offsetof(A64DynamicCallCacheEntry, host_address))));
+  // An entry the cache was initialized with holds no address.
+  cbz(x9, miss);
+  b(done);
+
+  L(miss);
+  // The host call can clobber x16, so hand the address over as its argument.
+  mov(w1, w16);
+  CallNativeSafe(reinterpret_cast<void*>(tail ? ResolveDynamicTailCall
+                                              : ResolveDynamicCall));
+  mov(x9, x0);
+
+  L(done);
 }
 
 void A64Emitter::CallNative(void* fn) { CallNativeSafe(fn); }

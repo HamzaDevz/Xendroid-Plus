@@ -10,6 +10,7 @@
 #ifndef XENIA_CPU_BACKEND_BACKEND_H_
 #define XENIA_CPU_BACKEND_BACKEND_H_
 
+#include <cstddef>
 #include <memory>
 #include <string>
 
@@ -29,6 +30,10 @@ class Processor;
 namespace xe {
 namespace cpu {
 namespace backend {
+
+// Bytes cpu/thread_state.cc allocates before each PPCContext for the backend's
+// per-thread context, which a backend addresses back from the PPCContext.
+constexpr size_t kBackendContextReserve = 512;
 static constexpr uint32_t MAX_GUEST_PSEUDO_STACKTRACE_ENTRIES = 32;
 
 struct GuestPseudoStackTrace {
