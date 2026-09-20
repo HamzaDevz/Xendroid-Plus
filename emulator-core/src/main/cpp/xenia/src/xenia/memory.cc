@@ -473,30 +473,49 @@ void Memory::UnmapViews() {
   }
 }
 
-bool Memory::MapUserViews(uint8_t* user_membase) {
+uint64_t Memory::UserViewFileOffset(uint32_t user_address) const {
   // The alias replaces the raw physical view, which user mode cannot reach.
-  static_assert(xe::countof(map_info) ==
-                std::extent_v<decltype(Memory::user_views_)>);
+  if (user_address - kUserAliasBase < kUserAliasSize) {
+    return 0x100000000ull + (user_address - kUserAliasBase);
+  }
+  for (const auto& info : map_info) {
+    if (user_address >= info.virtual_address_start &&
+        user_address <= info.virtual_address_end) {
+      return info.target_address + (user_address - info.virtual_address_start);
+    }
+  }
+  return UINT64_MAX;
+}
+
+bool Memory::MapUserViews(uint8_t* user_membase) {
   uint64_t granularity_mask = ~uint64_t(system_allocation_granularity_ - 1);
-  size_t count = 0;
-  auto map = [&](uint64_t start, uint64_t end, uint64_t target) {
-    const size_t length = size_t(end - start + 1);
-    auto view = reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
-        mapping_, user_membase + start, length,
-        xe::memory::PageAccess::kReadWrite, target & granularity_mask));
-    user_views_[count++] = {view, length};
-    return view != nullptr;
+  auto map = [&](uint64_t start, uint64_t end) {
+    // A driven segment is left empty for the fault to map it from the table.
+    for (uint64_t page = start; page <= end;) {
+      const uint64_t segment_end = std::min(end, page | uint64_t(0x0FFFFFFF));
+      if (!(user_page_table_segments_ & (uint32_t(1) << (page >> 28)))) {
+        const size_t length = size_t(segment_end - page + 1);
+        auto view = reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
+            mapping_, user_membase + page, length,
+            xe::memory::PageAccess::kReadWrite,
+            UserViewFileOffset(uint32_t(page)) & granularity_mask));
+        if (!view) {
+          return false;
+        }
+        user_views_.push_back({view, length});
+      }
+      page = segment_end + 1;
+    }
+    return true;
   };
-  // Physical memory, at the file offset the 0xA0000000 view starts from.
-  bool mapped =
-      map(kUserAliasBase, kUserAliasBase + kUserAliasSize - 1, 0x100000000ull);
+  bool mapped = map(kUserAliasBase, kUserAliasBase + kUserAliasSize - 1);
   for (size_t n = 0; mapped && n < xe::countof(map_info) - 1; n++) {
-    const uint64_t start = map_info[n].virtual_address_start;
+    uint64_t start = map_info[n].virtual_address_start;
     uint64_t end = map_info[n].virtual_address_end;
     if (start < kUserAliasBase) {
       end = std::min(end, uint64_t(kUserAliasBase) - 1);
     }
-    mapped = map(start, end, map_info[n].target_address);
+    mapped = map(start, end);
   }
   if (!mapped) {
     UnmapUserViews();
@@ -506,11 +525,10 @@ bool Memory::MapUserViews(uint8_t* user_membase) {
 
 void Memory::UnmapUserViews() {
   for (auto& view : user_views_) {
-    if (view.base) {
-      xe::memory::UnmapFileView(mapping_, view.base, view.length);
-    }
-    view = {};
+    xe::memory::UnmapFileView(mapping_, view.base, view.length);
   }
+  user_views_.clear();
+  FlushUserPageTable();
 }
 
 void Memory::Reset() {
@@ -731,6 +749,13 @@ bool Memory::AccessViolationCallback(
                      host >= reinterpret_cast<size_t>(physical_membase_))) {
     return false;
   }
+  // A driven segment has no 0xE0000000 skew, its address is the membase offset.
+  if (user_mode) {
+    const uint32_t user_address = uint32_t(host - user_membase);
+    if (user_page_table_segments_ & (uint32_t(1) << (user_address >> 28))) {
+      return MapUserPage(user_address);
+    }
+  }
   uint32_t virtual_address =
       user_mode ? UserModeKernelAddress(HostToGuestVirtual(
                       virtual_membase_ + (host - user_membase)))
@@ -864,11 +889,160 @@ void Memory::SystemHeapFree(uint32_t address, uint32_t* out_region_size) {
   heap->Release(address, out_region_size);
 }
 
+void Memory::SetUserPageTable(uint32_t descriptor_address) {
+  auto global_lock = global_critical_region_.Acquire();
+  if (user_page_table_ == descriptor_address) {
+    return;
+  }
+  // Whatever the old table mapped has to go.
+  const uint32_t mapped_segments = user_page_table_segments_;
+  FlushUserPageTable();
+  user_page_table_segments_ = 0;
+  user_page_table_ = 0;
+  if (!descriptor_address) {
+    return;
+  }
+  auto heap = LookupHeap(descriptor_address);
+  if (!heap ||
+      heap->IsRangeUnallocated(descriptor_address, kUserTableKind + 16)) {
+    XELOGE(
+        "Memory: the user mode page table descriptor at {:08X} is not mapped",
+        descriptor_address);
+    return;
+  }
+  const uint8_t* kinds = TranslateVirtual(descriptor_address) + kUserTableKind;
+  uint32_t segments = 0;
+  for (uint32_t segment = 0; segment < 16; segment++) {
+    if (kinds[segment] == kUserSegmentMedium ||
+        kinds[segment] == kUserSegmentLarge) {
+      segments |= uint32_t(1) << segment;
+    }
+  }
+  XELOGI("Memory: user mode page table at {:08X}, 64 KB page segments {:04X}",
+         descriptor_address, segments);
+  if (user_virtual_membase() && segments != mapped_segments) {
+    // The mask has to keep describing the views, which cannot move.
+    XELOGE(
+        "Memory: the user mode views are already mapped around segments "
+        "{:04X}, so {:04X} cannot take effect",
+        mapped_segments, segments ^ mapped_segments);
+    segments = mapped_segments;
+  }
+  // The table has to be readable before any segment claims to be driven.
+  user_page_table_ = descriptor_address;
+  user_page_table_segments_ = segments;
+}
+
+bool Memory::TranslateUserPage(uint32_t user_address,
+                               uint32_t* out_physical_address) {
+  if (!(user_page_table_segments_ & (uint32_t(1) << (user_address >> 28)))) {
+    return false;
+  }
+  uint32_t physical_address;
+  if (TranslateVirtual(user_page_table_ + kUserTableKind)[user_address >> 28] ==
+      kUserSegmentLarge) {
+    // A 16 MB page sits in the descriptor itself, with no table page.
+    const uint32_t entry = xe::load_and_swap<uint32_t>(TranslateVirtual(
+        user_page_table_ + kUserTableLarge + (user_address >> 24) * 4));
+    if (!entry) {
+      return false;
+    }
+    physical_address = (entry & 0xFF000000) | (user_address & 0x00FF0000);
+  } else {
+    const uint32_t frame = xe::load_and_swap<uint16_t>(TranslateVirtual(
+        user_page_table_ + kUserTableMedium + (user_address >> 27) * 2));
+    // A table page is named by a physical address in 8 KB units.
+    const uint32_t table_address = frame << 13;
+    if (!frame || table_address >= 0x20000000) {
+      return false;
+    }
+    const uint32_t entry = xe::load_and_swap<uint32_t>(
+        TranslatePhysical(table_address) + ((user_address >> 16) & 0x7FF) * 4);
+    if (!entry) {
+      return false;
+    }
+    physical_address = entry & ~(kUserPageSize - 1);
+  }
+  if (physical_address >= 0x20000000) {
+    return false;
+  }
+  // An entry is only worth anything where xenia keeps that memory physically.
+  if (GetPhysicalHeap()->IsRangeUnallocated(physical_address, kUserPageSize)) {
+    return false;
+  }
+  *out_physical_address = physical_address;
+  return true;
+}
+
+bool Memory::MapUserPage(uint32_t user_address) {
+  const uint32_t page = user_address & ~(kUserPageSize - 1);
+  const uint32_t index = page / kUserPageSize;
+  const uint64_t bit = uint64_t(1) << (index % 64);
+  if (user_page_mapped_[index / 64] & bit) {
+    // Another thread faulted on the same page and mapped it first.
+    return true;
+  }
+  uint64_t file_offset;
+  uint32_t physical_address;
+  if (TranslateUserPage(page, &physical_address)) {
+    file_offset = 0x100000000ull + physical_address;
+  } else {
+    // Nothing maps it, and xenia cannot deliver the fault the console would.
+    file_offset = UserViewFileOffset(page);
+    if (file_offset == UINT64_MAX) {
+      return false;
+    }
+    static uint32_t unmapped_count = 0;
+    if (xe::is_pow2(++unmapped_count)) {
+      XELOGW(
+          "The user mode page table does not map {:08X}, so it shows the same "
+          "memory as the kernel address space ({} pages so far)",
+          page, unmapped_count);
+    }
+  }
+  // Read-write whatever the protection bits say, nothing delivers faults yet.
+  auto view = reinterpret_cast<uint8_t*>(xe::memory::MapFileView(
+      mapping_, user_virtual_membase() + page, kUserPageSize,
+      xe::memory::PageAccess::kReadWrite,
+      file_offset & ~uint64_t(system_allocation_granularity_ - 1)));
+  if (!view) {
+    XELOGE("Memory: unable to show user mode page {:08X}", page);
+    return false;
+  }
+  // The mapping is SEC_RESERVE, so an uncommitted page faults regardless.
+  if (!xe::memory::AllocFixed(view, kUserPageSize,
+                              xe::memory::AllocationType::kCommit,
+                              xe::memory::PageAccess::kReadWrite)) {
+    XELOGE("Memory: unable to commit user mode page {:08X}", page);
+    xe::memory::UnmapFileView(mapping_, view, kUserPageSize);
+    return false;
+  }
+  user_page_mapped_[index / 64] |= bit;
+  return true;
+}
+
+void Memory::FlushUserPageTable() {
+  auto global_lock = global_critical_region_.Acquire();
+  uint8_t* user_membase = user_virtual_membase();
+  for (size_t word = 0; word < user_page_mapped_.size(); word++) {
+    uint64_t bits = user_page_mapped_[word];
+    uint32_t page_in_word;
+    while (xe::bit_scan_forward(bits, &page_in_word)) {
+      bits &= bits - 1;
+      const size_t index = word * 64 + page_in_word;
+      xe::memory::UnmapFileView(mapping_, user_membase + index * kUserPageSize,
+                                kUserPageSize);
+    }
+    user_page_mapped_[word] = 0;
+  }
+}
+
 bool Memory::EnableUserModeViews() {
   auto global_lock = global_critical_region_.Acquire();
   if (user_virtual_membase()) {
     return true;
   }
+  user_page_mapped_.assign(kUserPageCount / 64, 0);
   const uint64_t layout_end = reinterpret_cast<uint64_t>(physical_membase_) +
                               0x20000000ull + system_allocation_granularity_;
   // Low 32 bits clear like the kernel membase, which the JIT may rely on.
@@ -1945,6 +2119,22 @@ bool BaseHeap::QueryProtectUnlocked(uint32_t address,
     return false;
   }
   *out_protect = page_table_[page_number].current_protect;
+  return true;
+}
+
+bool BaseHeap::IsRangeUnallocated(uint32_t address, uint32_t size) {
+  if (address < heap_base_ || (address - heap_base_) >= heap_size_ ||
+      size > heap_size_ - (address - heap_base_)) {
+    return false;
+  }
+  uint32_t first = (address - heap_base_) >> page_size_shift_;
+  uint32_t last = (address + (size - 1) - heap_base_) >> page_size_shift_;
+  auto global_lock = global_critical_region_.Acquire();
+  for (uint32_t i = first; i <= last; ++i) {
+    if (page_table_[i].state) {
+      return false;
+    }
+  }
   return true;
 }
 

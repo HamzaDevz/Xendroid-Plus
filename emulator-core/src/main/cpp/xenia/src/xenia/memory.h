@@ -226,6 +226,10 @@ class BaseHeap {
   // answer may be a moment stale.
   bool QueryProtectUnlocked(uint32_t address, uint32_t* out_protect) const;
 
+  // Whether no page of the range is reserved or committed in this heap (false
+  // for a range outside it).
+  bool IsRangeUnallocated(uint32_t address, uint32_t size);
+
   // Queries the currently strictest readability and writability for the entire
   // range.
   xe::memory::PageAccess QueryRangeAccess(uint32_t low_address,
@@ -350,6 +354,9 @@ class PhysicalHeap : public BaseHeap {
                         bool invalidate_unwatched = false);
 
   uint32_t GetPhysicalAddress(uint32_t address) const;
+
+  // The 0-512mb heap every physical allocation is recorded in.
+  BaseHeap* parent_heap() const { return parent_heap_; }
 
   uint32_t SystemPagenumToGuestPagenum(uint32_t num) const {
     uint32_t system_base = num << system_page_shift_;
@@ -641,9 +648,14 @@ class Memory {
   // Frees memory allocated with SystemHeapAlloc.
   void SystemHeapFree(uint32_t address, uint32_t* out_region_size = nullptr);
 
-  // Maps the address space user mode code runs in, which shows 64 KB physical
-  // memory at 0x20000000-0x3FFFFFFF. Titles without user mode never create it.
+  // Records the page table KeCreateUserMode was given, before the views exist.
+  void SetUserPageTable(uint32_t descriptor_address);
+
+  // Maps the address space user mode code runs in, empty in a driven segment.
   bool EnableUserModeViews();
+
+  // Drops every page mapped through the page table, which flushing the TB does.
+  void FlushUserPageTable();
 
   // Base of the user mode address space, null until it is created.
   inline uint8_t* user_virtual_membase() const {
@@ -651,16 +663,25 @@ class Memory {
   }
 
   // The kernel address with the same contents as a user mode address.
-  static uint32_t UserModeKernelAddress(uint32_t user_address) {
-    return user_address - kUserAliasBase < kUserAliasSize
-               ? user_address + 0x80000000
-               : user_address;
+  uint32_t UserModeKernelAddress(uint32_t user_address) {
+    uint32_t physical_address;
+    if (TranslateUserPage(user_address, &physical_address)) {
+      // The 64 KB page window shows every physical address the table can name.
+      return 0xA0000000 + physical_address +
+             (user_address & (kUserPageSize - 1));
+    }
+    if (user_address - kUserAliasBase < kUserAliasSize) {
+      return user_address + 0x80000000;
+    }
+    return user_address;
   }
-  // The inverse of UserModeKernelAddress.
+
+  // The inverse of UserModeKernelAddress for the alias, which is all it covers.
   static uint32_t KernelModeUserAddress(uint32_t kernel_address) {
-    return kernel_address - 0xA0000000 < kUserAliasSize
-               ? kernel_address - 0x80000000
-               : kernel_address;
+    if (kernel_address - 0xA0000000 < kUserAliasSize) {
+      return kernel_address - 0x80000000;
+    }
+    return kernel_address;
   }
 
   // Gets the heap for the address space containing the given address.
@@ -701,8 +722,26 @@ class Memory {
   bool MapUserViews(uint8_t* user_membase);
   void UnmapUserViews();
 
+  // The file offset the user mode address space shows at an address.
+  uint64_t UserViewFileOffset(uint32_t user_address) const;
+  // The physical address the page table translates a user mode address to.
+  bool TranslateUserPage(uint32_t user_address, uint32_t* out_physical_address);
+  // Shows the page a user mode address falls in, on the fault under the lock.
+  bool MapUserPage(uint32_t user_address);
+
   static constexpr uint32_t kUserAliasBase = 0x20000000;
   static constexpr uint32_t kUserAliasSize = 0x20000000;
+
+  // The host allocation granularity, so a 4 KB page segment cannot be driven.
+  static constexpr uint32_t kUserPageSize = 0x10000;
+  static constexpr uint32_t kUserPageCount = 0x100000000ull / kUserPageSize;
+  // A PTE is the physical address with the protection in its low bits.
+  static constexpr uint32_t kUserTableLarge = 0x400;   // u32[256], by >> 24
+  static constexpr uint32_t kUserTableMedium = 0x800;  // u16[32], by >> 27
+  static constexpr uint32_t kUserTableKind = 0x840;    // u8[16], by >> 28
+  // The segment kinds a host view can match, unlike the 4 KB pages.
+  static constexpr uint8_t kUserSegmentLarge = 0x3;   // 16 MB pages, inline
+  static constexpr uint8_t kUserSegmentMedium = 0x6;  // 64 KB pages, a table
 
   static uint32_t HostToGuestVirtualThunk(const void* context,
                                           const void* host_address);
@@ -737,10 +776,16 @@ class Memory {
     uint8_t* all_views[9];
   } views_ = {{0}};
   std::atomic<uint8_t*> user_virtual_membase_{nullptr};
-  struct {
+  struct UserView {
     uint8_t* base;
     size_t length;
-  } user_views_[9] = {};
+  };
+  std::vector<UserView> user_views_;
+  // Set before the views are mapped and never changed, so read unlocked.
+  uint32_t user_page_table_ = 0;
+  uint32_t user_page_table_segments_ = 0;
+  // One bit per user mode page mapped from the table, under the global lock.
+  std::vector<uint64_t> user_page_mapped_;
 
   std::unique_ptr<cpu::MMIOHandler> mmio_handler_;
 

@@ -916,7 +916,8 @@ void KeSweepIcacheRange_entry(lpvoid_t address, dword_t length,
   processor->InvalidateCodeRange(start, length);
   // Code is written through whichever address space the writer runs in and
   // run from the other, so the range has to be forgotten under both names.
-  const uint32_t kernel_start = xe::Memory::UserModeKernelAddress(start);
+  const uint32_t kernel_start =
+      ctx->processor->memory()->UserModeKernelAddress(start);
   if (kernel_start != start) {
     processor->InvalidateCodeRange(kernel_start, length);
   }

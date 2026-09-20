@@ -96,16 +96,32 @@ class DynamicCodeModule : public Module {
 
   // User mode addresses alias physical memory, so ask about the kernel address.
   bool ContainsAddress(uint32_t address) override {
-    const uint32_t kernel_address = Memory::UserModeKernelAddress(address);
+    const uint32_t kernel_address = memory_->UserModeKernelAddress(address);
     auto heap = memory_->LookupHeap(kernel_address);
+    if (!heap) {
+      return false;
+    }
     uint32_t protect = 0;
-    return heap && heap->QueryProtect(kernel_address, &protect) &&
+    if (heap->QueryProtect(kernel_address, &protect) &&
+        (protect & kMemoryProtectRead)) {
+      return true;
+    }
+    // The physical windows alias each other, the parent heap records them all.
+    if (heap->heap_type() != HeapType::kGuestPhysical) {
+      return false;
+    }
+    auto parent = static_cast<PhysicalHeap*>(heap)->parent_heap();
+    const uint32_t physical_address =
+        memory_->GetPhysicalAddress(kernel_address);
+    protect = 0;
+    return parent && physical_address != UINT32_MAX &&
+           parent->QueryProtect(physical_address, &protect) &&
            (protect & kMemoryProtectRead);
   }
 
   const uint8_t* TranslateCode(uint32_t address) const override {
     return memory_->TranslateVirtual<const uint8_t*>(
-        Memory::UserModeKernelAddress(address));
+        memory_->UserModeKernelAddress(address));
   }
 
  protected:

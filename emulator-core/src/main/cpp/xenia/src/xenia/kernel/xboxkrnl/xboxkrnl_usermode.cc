@@ -276,6 +276,7 @@ dword_result_t KeCreateUserMode_entry(dword_t unknown, lpvoid_t descriptor,
     return X_STATUS_NOT_SUPPORTED;
   }
   backend->DestroyStackpointState(stackpoint_probe);
+  kernel_memory()->SetUserPageTable(descriptor.guest_address());
   if (!kernel_memory()->EnableUserModeViews()) {
     return X_STATUS_NO_MEMORY;
   }
@@ -434,9 +435,18 @@ void KeContextFromKframes_entry(lpvoid_t kframes, lpvoid_t context) {
 DECLARE_XBOXKRNL_EXPORT2(KeContextFromKframes, kThreading, kImplemented,
                          kHighFrequency);
 
-// There's no emulated TLB to flush.
-void KeFlushUserModeCurrentTb_entry() {}
+// Dropping more than was asked for only costs a fault, so none reads its args.
+void KeFlushUserModeCurrentTb_entry() { kernel_memory()->FlushUserPageTable(); }
 DECLARE_XBOXKRNL_EXPORT1(KeFlushUserModeCurrentTb, kMemory, kImplemented);
+
+void KeFlushUserModeTb_entry() { kernel_memory()->FlushUserPageTable(); }
+DECLARE_XBOXKRNL_EXPORT1(KeFlushUserModeTb, kMemory, kImplemented);
+
+void KeFlushCurrentEntireTb_entry() { kernel_memory()->FlushUserPageTable(); }
+DECLARE_XBOXKRNL_EXPORT1(KeFlushCurrentEntireTb, kMemory, kImplemented);
+
+void KeFlushEntireTb_entry() { kernel_memory()->FlushUserPageTable(); }
+DECLARE_XBOXKRNL_EXPORT1(KeFlushEntireTb, kMemory, kImplemented);
 
 }  // namespace xboxkrnl
 }  // namespace kernel
