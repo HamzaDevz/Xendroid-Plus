@@ -2118,12 +2118,14 @@ bool Emulator::ExceptionCallback(Exception* ex) {
   assert_not_null(current_thread);
 
   auto guest_function = code_cache->LookupFunction(ex->pc());
-  assert_not_null(guest_function);
 
   auto context = current_thread->thread_state()->context();
 
+  // A fault in a JIT thunk has no guest function (release builds drop the
+  // assert), so there is no guest PC to map it to.
   const uint32_t guest_pc =
-      guest_function->MapMachineCodeToGuestAddress(ex->pc());
+      guest_function ? guest_function->MapMachineCodeToGuestAddress(ex->pc())
+                     : 0;
   const uint32_t guest_lr = uint32_t(context->lr);
   const uint32_t guest_ctr = uint32_t(context->ctr);
   const uint32_t guest_sp = uint32_t(context->r[1]);
@@ -2169,11 +2171,19 @@ bool Emulator::ExceptionCallback(Exception* ex) {
       current_thread->name(),
       current_thread->thread() ? current_thread->thread()->system_id() : 0,
       current_thread->thread_id(), current_thread->handle()));
-  crash_msg.append(fmt::format("PC:  0x{:08X}  {}\n", guest_pc,
-                               mod_off(guest_pc)));
+  if (guest_function) {
+    crash_msg.append(fmt::format("PC:  0x{:08X}  {}\n", guest_pc,
+                                 mod_off(guest_pc)));
+  } else {
+    crash_msg.append(fmt::format(
+        "PC:  unavailable (unmapped host JIT address 0x{:016X})\n", ex->pc()));
+  }
   // The start of the guest function the PC is in, for dump_functions_at.
   crash_msg.append(
-      fmt::format("Function: 0x{:08X}\n", guest_function->address()));
+      guest_function
+          ? fmt::format("Function: 0x{:08X}\n", guest_function->address())
+          : std::string("Function: none (host JIT code outside any guest "
+                        "function)\n"));
   crash_msg.append(fmt::format("LR:  0x{:08X}  {}\n", guest_lr,
                                mod_off(guest_lr)));
   crash_msg.append(
