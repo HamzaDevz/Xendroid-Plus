@@ -361,9 +361,10 @@ dword_result_t KeEnterUserMode_entry(lpvoid_t user_context, dword_t handler,
                uint32_t(guest_context->r[1])) {
       XELOGD(
           "User mode: entry at {:08X} with r1 {:08X} drops the trap parked "
-          "at {:08X}",
+          "at {:08X} with r1 {:08X}",
           entry_address, uint32_t(guest_context->r[1]),
-          user_mode->parked.back()->resume_address);
+          user_mode->parked.back()->resume_address,
+          user_mode->parked.back()->stack_pointer);
       user_mode->parked.pop_back();
     }
     for (auto& user_fiber : user_mode->fibers) {
