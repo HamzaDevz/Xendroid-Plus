@@ -223,6 +223,38 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
     CodeGenerator::cbnz(rt, label);
   }
 
+  // A compare whose only reader is the branch right after it makes no
+  // boolean: the branch reads the flags the compare set. Keyed on the
+  // register the cset would have written; cleared on read. Only instructions
+  // that PassesHandoffs may sit between the two, and the branch must take it,
+  // or Emit fails the function.
+  void MarkFusedCompareBranch(int dest_reg, Xbyak_aarch64::Cond cond) {
+    fused_cmp_branch_reg_ = dest_reg;
+    fused_cmp_branch_cond_ = cond;
+  }
+  bool ConsumeFusedCompareBranch(int dest_reg, Xbyak_aarch64::Cond* out_cond) {
+    if (dest_reg < 0 || fused_cmp_branch_reg_ != dest_reg) {
+      return false;
+    }
+    *out_cond = fused_cmp_branch_cond_;
+    fused_cmp_branch_reg_ = -1;
+    return true;
+  }
+
+  // SOURCE_OFFSET, CONTEXT_BARRIER and NOP emit no code that touches NZCV
+  // (here SOURCE_OFFSET only records a source map entry). COMMENT does not
+  // pass: it calls TraceString when instruction tracing is on.
+  static bool PassesHandoffs(const hir::Instr* instr) {
+    switch (instr->GetOpcodeNum()) {
+      case hir::OPCODE_SOURCE_OFFSET:
+      case hir::OPCODE_CONTEXT_BARRIER:
+      case hir::OPCODE_NOP:
+        return true;
+      default:
+        return false;
+    }
+  }
+
   // Get or create a xbyak_aarch64 label for a HIR label ID.
   Xbyak_aarch64::Label& GetLabel(uint32_t label_id);
 
@@ -284,6 +316,13 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
 
   // Map from HIR label IDs to xbyak_aarch64 Labels.
   std::unordered_map<uint32_t, Xbyak_aarch64::Label*> label_map_;
+
+  // The compare-branch handoff between adjacent sequences; see
+  // MarkFusedCompareBranch.
+  void ResetSequenceHandoffs() { fused_cmp_branch_reg_ = -1; }
+  bool sequence_handoff_pending() const { return fused_cmp_branch_reg_ >= 0; }
+  int fused_cmp_branch_reg_ = -1;
+  Xbyak_aarch64::Cond fused_cmp_branch_cond_ = Xbyak_aarch64::EQ;
 
   FPCRMode fpcr_mode_ = FPCRMode::Unknown;
   bool synchronize_stack_on_next_instruction_ = false;
