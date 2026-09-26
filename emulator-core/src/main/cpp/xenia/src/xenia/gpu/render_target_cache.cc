@@ -1121,6 +1121,7 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
                                const Shader& vertex_shader) {
   const RegisterFile& regs = register_file();
   bool interlock_barrier_only = GetPath() == Path::kPixelShaderInterlock;
+  last_update_draw_target_ = RenderTargetKey();
 
   auto rb_surface_info = regs.Get<reg::RB_SURFACE_INFO>();
   xenos::MsaaSamples msaa_samples = rb_surface_info.msaa_samples;
@@ -1445,6 +1446,13 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
   // draw with whatever contents currently are in the render target in this
   // case).
 
+  uint32_t draw_target_index;
+  if (xe::bit_scan_forward(depth_and_color_rts_used_bits & ~uint32_t(1),
+                           &draw_target_index) ||
+      xe::bit_scan_forward(depth_and_color_rts_used_bits, &draw_target_index)) {
+    last_update_draw_target_ = rt_keys[draw_target_index];
+  }
+
   // Slots dropped by the EDRAM base conflict elimination aren't drawn to.
   uint32_t color_rts_blend_reading_dest_used =
       color_rts_blend_reading_dest & (depth_and_color_rts_used_bits >> 1);
@@ -1625,6 +1633,35 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
   }
 
   return true;
+}
+
+bool RenderTargetCache::TrackLastUpdateDrawTarget(uint64_t frame) {
+  if (last_update_draw_target_.IsEmpty()) {
+    return true;
+  }
+  // Most draws go into the target of the draw before them.
+  if (last_update_draw_target_ == draw_target_tracked_ &&
+      frame == draw_target_tracked_frame_) {
+    return draw_target_tracked_recurring_;
+  }
+  std::pair<uint64_t, uint64_t>& frames =
+      draw_target_last_frames_[last_update_draw_target_];
+  if (frames.first != frame) {
+    frames.second = frames.first;
+    frames.first = frame;
+  }
+  // Frame 0 is never. A pass drawn every frame may still miss one (4E4D083A).
+  draw_target_tracked_ = last_update_draw_target_;
+  draw_target_tracked_frame_ = frame;
+  draw_target_tracked_recurring_ =
+      frames.second && frame - frames.second <= kDrawTargetRecurringFrames;
+  return draw_target_tracked_recurring_;
+}
+
+std::string RenderTargetCache::GetLastUpdateDrawTargetName() const {
+  return last_update_draw_target_.IsEmpty()
+             ? std::string("no RT")
+             : last_update_draw_target_.GetDebugName();
 }
 
 uint32_t RenderTargetCache::GetLastUpdateBoundRenderTargets(
