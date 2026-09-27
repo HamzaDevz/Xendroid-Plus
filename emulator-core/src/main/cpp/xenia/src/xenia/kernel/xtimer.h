@@ -34,14 +34,25 @@ class XTimer : public XObject {
                     uint32_t routine_arg, bool resume);
   X_STATUS Cancel();
 
+  // Disarms every timer so none fires into a kernel being torn down.
+  static void CancelAll();
+
  protected:
-  xe::threading::WaitHandle* GetWaitHandle() override { return timer_.get(); }
+  xe::threading::WaitHandle* GetWaitHandle() override {
+    if (signal_) {
+      return signal_.get();
+    }
+    return timer_.get();
+  }
 
  private:
   // Callers must cancel the host timer first.
   void RemoveApc();
 
   std::unique_ptr<xe::threading::Timer> timer_;
+  // Guest scheduler only. Set by the expiry callback, so a waiter it wakes
+  // finds it signaled.
+  std::unique_ptr<xe::threading::Event> signal_;
   std::mutex timer_lock_;
 
   // Reused across expiries like the KAPC a KTIMER embeds.

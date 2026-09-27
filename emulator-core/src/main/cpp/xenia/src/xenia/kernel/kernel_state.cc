@@ -31,6 +31,7 @@
 #include "xenia/kernel/xthread.h"
 #include "xenia/ui/host_message_box.h"
 #include "xenia/ui/host_text_input.h"
+#include "xenia/kernel/xtimer.h"
 #include "xenia/ui/imgui_host_notification.h"
 
 #include "third_party/crypto/TinySHA1.hpp"
@@ -85,6 +86,9 @@ KernelState::KernelState(Emulator* emulator)
 }
 
 KernelState::~KernelState() {
+  // Before anything a timer callback touches goes away.
+  XTimer::CancelAll();
+
   SetExecutableModule(nullptr);
 
   ShutdownDispatchThread();
@@ -92,6 +96,8 @@ KernelState::~KernelState() {
   // Reclaiming leftover fibers releases handles, so run this while the object
   // table is still alive.
   guest_scheduler_->Shutdown();
+  // Guest code may have re-armed one since.
+  XTimer::CancelAll();
 
   executable_module_.reset();
   user_modules_.clear();
