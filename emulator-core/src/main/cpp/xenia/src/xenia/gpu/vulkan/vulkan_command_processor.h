@@ -660,6 +660,12 @@ class VulkanCommandProcessor final : public CommandProcessor {
     }
     return drained;
   }
+  // command_processor_memexport.inc: the submission of the last export, not the
+  // whole queue. Always inlined for VkAwaitSites too.
+  XE_FORCEINLINE bool AwaitMemexportSubmission(uint64_t submission) {
+    CheckSubmissionCompletionAndDeviceLoss(submission);
+    return !device_lost_ && GetCompletedSubmission() >= submission;
+  }
 
   void ClearTransientDescriptorPools();
 

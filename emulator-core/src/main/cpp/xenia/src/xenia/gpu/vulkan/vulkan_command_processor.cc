@@ -7307,6 +7307,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       memexport_await_pending_ = true;
       memexport_readbacks_pending_ = true;
       memexport_readbacks_in_submission_ = true;
+      memexport_last_submission_ = GetCurrentSubmission();
     }
     PushBufferMemoryBarrier(
         shared_memory_->buffer(), memexport_extent_start,
