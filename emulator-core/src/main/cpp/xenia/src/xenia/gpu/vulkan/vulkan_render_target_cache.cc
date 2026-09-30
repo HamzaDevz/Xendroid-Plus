@@ -273,6 +273,7 @@ namespace shaders {
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_clear_32bpp_scaled_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_clear_64bpp_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_clear_64bpp_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_dxt3aas1111_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_32bpp_1x2xmsaa_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_32bpp_1x2xmsaa_scaled_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_32bpp_4xmsaa_cs.h"
@@ -432,6 +433,8 @@ const VulkanRenderTargetCache::ResolveCopyShaderCode
          sizeof(shaders::resolve_full_128bpp_cs),
          shaders::resolve_full_128bpp_scaled_cs,
          sizeof(shaders::resolve_full_128bpp_scaled_cs)},
+        {shaders::resolve_dxt3aas1111_cs,
+         sizeof(shaders::resolve_dxt3aas1111_cs), nullptr, 0},
 };
 
 // Same order as kResolveCopyShaders. The fast copies are raw, so only the full
@@ -475,6 +478,8 @@ const VulkanRenderTargetCache::ResolveCopyShaderCode
          sizeof(shaders::resolve_full_128bpp_fast_cs),
          shaders::resolve_full_128bpp_fast_scaled_cs,
          sizeof(shaders::resolve_full_128bpp_fast_scaled_cs)},
+        {shaders::resolve_dxt3aas1111_cs,
+         sizeof(shaders::resolve_dxt3aas1111_cs), nullptr, 0},
 };
 
 // Each entry expands to {code, sizeof(code), "code"} for one generated SPIR-V
@@ -1193,10 +1198,12 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
   resolve_copy_push_constant_range.offset = 0;
   // Potentially binding all of the shared memory at 1x resolution, but only
   // portions with scaled resolution.
+  // Copy command 2 (unscaled only) takes its constants right after.
   resolve_copy_push_constant_range.size =
       draw_resolution_scaled
           ? sizeof(draw_util::ResolveCopyShaderConstants::DestRelative)
-          : sizeof(draw_util::ResolveCopyShaderConstants);
+          : sizeof(draw_util::ResolveCopyShaderConstants) +
+                sizeof(draw_util::ResolveCopy1111ShaderConstants);
   VkPipelineLayoutCreateInfo resolve_copy_pipeline_layout_create_info;
   resolve_copy_pipeline_layout_create_info.sType =
       VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1221,7 +1228,8 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
   if (draw_resolution_scaled) {
     // Second layout for fully native resolve copies.
     resolve_copy_push_constant_range.size =
-        sizeof(draw_util::ResolveCopyShaderConstants);
+        sizeof(draw_util::ResolveCopyShaderConstants) +
+        sizeof(draw_util::ResolveCopy1111ShaderConstants);
     if (dfn.vkCreatePipelineLayout(
             device, &resolve_copy_pipeline_layout_create_info, nullptr,
             &resolve_copy_native_pipeline_layout_) != VK_SUCCESS) {
@@ -1245,29 +1253,7 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
                                                : kResolveCopyShadersFastFormats[i];
     // Somewhat verification whether resolve_copy_shaders_ is up to date.
     assert_true(resolve_copy_shader_code.unscaled &&
-                resolve_copy_shader_code.unscaled_size_bytes &&
-                resolve_copy_shader_code.scaled &&
-                resolve_copy_shader_code.scaled_size_bytes);
-    // Resolve copy shaders use 8x8 = 64 threads per group. Request wave64 mode
-    // on RDNA GPUs to ensure one full wave per group.
-    VkPipeline resolve_copy_pipeline = ui::vulkan::util::CreateComputePipeline(
-        vulkan_device, resolve_copy_pipeline_layout_,
-        draw_resolution_scaled ? resolve_copy_shader_code.scaled
-                               : resolve_copy_shader_code.unscaled,
-        draw_resolution_scaled ? resolve_copy_shader_code.scaled_size_bytes
-                               : resolve_copy_shader_code.unscaled_size_bytes,
-        nullptr, "main", 64);
-    if (resolve_copy_pipeline == VK_NULL_HANDLE) {
-      XELOGE(
-          "VulkanRenderTargetCache: Failed to create the resolve copy "
-          "pipeline {}",
-          resolve_copy_shader_info.debug_name);
-      Shutdown();
-      return false;
-    }
-    vulkan_device->SetObjectName(VK_OBJECT_TYPE_PIPELINE, resolve_copy_pipeline,
-                                 resolve_copy_shader_info.debug_name);
-    resolve_copy_pipelines_[i] = resolve_copy_pipeline;
+                resolve_copy_shader_code.unscaled_size_bytes);
     if (draw_resolution_scaled) {
       // Unscaled variant for fully native resolves.
       VkPipeline resolve_copy_native_pipeline =
@@ -1288,6 +1274,30 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
                                    resolve_copy_shader_info.debug_name);
       resolve_copy_native_pipelines_[i] = resolve_copy_native_pipeline;
     }
+    // Copy command 2 has no scaled shader: with scaling it only copies natively.
+    if (draw_resolution_scaled && !resolve_copy_shader_code.scaled) {
+      continue;
+    }
+    // Resolve copy shaders use 8x8 = 64 threads per group. Request wave64 mode
+    // on RDNA GPUs to ensure one full wave per group.
+    VkPipeline resolve_copy_pipeline = ui::vulkan::util::CreateComputePipeline(
+        vulkan_device, resolve_copy_pipeline_layout_,
+        draw_resolution_scaled ? resolve_copy_shader_code.scaled
+                               : resolve_copy_shader_code.unscaled,
+        draw_resolution_scaled ? resolve_copy_shader_code.scaled_size_bytes
+                               : resolve_copy_shader_code.unscaled_size_bytes,
+        nullptr, "main", 64);
+    if (resolve_copy_pipeline == VK_NULL_HANDLE) {
+      XELOGE(
+          "VulkanRenderTargetCache: Failed to create the resolve copy "
+          "pipeline {}",
+          resolve_copy_shader_info.debug_name);
+      Shutdown();
+      return false;
+    }
+    vulkan_device->SetObjectName(VK_OBJECT_TYPE_PIPELINE, resolve_copy_pipeline,
+                                 resolve_copy_shader_info.debug_name);
+    resolve_copy_pipelines_[i] = resolve_copy_pipeline;
   }
 
   // The destination texture of the variants storing into it is set 3 (unused
@@ -1320,6 +1330,9 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
   direct_host_resolve_pipeline_layout_create_info.pSetLayouts =
       direct_host_resolve_color_descriptor_set_layouts;
   direct_host_resolve_pipeline_layout_create_info.pushConstantRangeCount = 1;
+  // The direct host resolves push no copy command 2 constants.
+  resolve_copy_push_constant_range.size =
+      sizeof(draw_util::ResolveCopyShaderConstants);
   direct_host_resolve_pipeline_layout_create_info.pPushConstantRanges =
       &resolve_copy_push_constant_range;
   if (dfn.vkCreatePipelineLayout(
@@ -3966,12 +3979,24 @@ bool VulkanRenderTargetCache::Resolve(
       }
       // The copy shader depends on the scale the copy will run at, which is
       // only known once copy_native is decided, so derive it here - the fork's
-      // in-pass and direct-host paths below consume it.
-      copy_shader = resolve_info.GetCopyShader(
-          copy_native ? 1 : draw_resolution_scale_x(),
-          copy_native ? 1 : draw_resolution_scale_y(), copy_shader_constants,
-          copy_group_count_x, copy_group_count_y);
-      assert_true(copy_group_count_x && copy_group_count_y);
+      // in-pass and direct-host paths below consume it. Copy command 2 has no
+      // scaled shader: with resolution scaling it is only done when everything
+      // owning the source is native, and otherwise skipped (the clears still
+      // happen).
+      if (draw_resolution_scaled && !copy_native &&
+          resolve_info.rb_copy_control.copy_command ==
+              xenos::CopyCommand::kConvertTo1111) {
+        XELOGW(
+            "Resolve copy command 2 is not supported with resolution scaling");
+        // Nothing to copy then, as without a destination.
+        copied = true;
+      } else {
+        copy_shader = resolve_info.GetCopyShader(
+            copy_native ? 1 : draw_resolution_scale_x(),
+            copy_native ? 1 : draw_resolution_scale_y(), copy_shader_constants,
+            copy_group_count_x, copy_group_count_y);
+        assert_true(copy_group_count_x && copy_group_count_y);
+      }
       // Try the on-tile resolve before dumping the owning render targets - not
       // after a transfer flush, which left a transfer pass open instead of the
       // guest pass.
@@ -4249,6 +4274,17 @@ bool VulkanRenderTargetCache::Resolve(
             command_buffer.CmdVkPushConstants(
                 copy_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                 sizeof(copy_shader_constants), &copy_shader_constants);
+            if (copy_shader ==
+                draw_util::ResolveCopyShaderIndex::kDXT3AAs1111) {
+              draw_util::ResolveCopy1111ShaderConstants copy_1111_constants;
+              copy_1111_constants.copy_func = resolve_info.rb_copy_func;
+              copy_1111_constants.copy_ref = resolve_info.rb_copy_ref;
+              copy_1111_constants.copy_mask = resolve_info.rb_copy_mask;
+              command_buffer.CmdVkPushConstants(
+                  copy_pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT,
+                  sizeof(copy_shader_constants), sizeof(copy_1111_constants),
+                  &copy_1111_constants);
+            }
           }
           command_processor_.SubmitBarriers(true);
           const bool dispatch_timed = OpenResolveCopyDispatchTimestamp(false);
