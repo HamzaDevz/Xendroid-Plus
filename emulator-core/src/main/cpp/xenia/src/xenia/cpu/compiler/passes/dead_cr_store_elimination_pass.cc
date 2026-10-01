@@ -40,10 +40,6 @@ constexpr uint32_t kCRBase =
 constexpr uint32_t kCRBytes = 8 * 4;
 constexpr uint32_t kAllCR = ~uint32_t(0);
 
-// PowerPC ABI: cr2-cr4 survive a call, the rest are the callee's to destroy.
-constexpr uint32_t kVolatileCR = 0x000000FFu     // cr0, cr1
-                                 | 0xFFF00000u;  // cr5, cr6, cr7
-
 uint32_t MaskForRange(uint32_t offset, uint32_t size) {
   uint32_t mask = 0;
   for (uint32_t byte = offset; byte < offset + size; ++byte) {
@@ -52,30 +48,6 @@ uint32_t MaskForRange(uint32_t offset, uint32_t size) {
     }
   }
   return mask;
-}
-
-enum class CallKind {
-  kNotACall,
-  kUnconditional,
-  kConditional,
-};
-
-CallKind ClassifyCall(const Instr* i) {
-  switch (i->GetOpcodeNum()) {
-    // CALL_EXTERN is not a guest call: `sc` lowers to one, and the syscall
-    // handler saves the whole CR. It falls through to the VOLATILE rule.
-    case OPCODE_CALL:
-    case OPCODE_CALL_INDIRECT:
-      // A tail call is an exit, not a clobber.
-      return (i->flags & CALL_TAIL) ? CallKind::kNotACall
-                                    : CallKind::kUnconditional;
-    case OPCODE_CALL_TRUE:
-    case OPCODE_CALL_INDIRECT_TRUE:
-      return (i->flags & CALL_TAIL) ? CallKind::kNotACall
-                                    : CallKind::kConditional;
-    default:
-      return CallKind::kNotACall;
-  }
 }
 
 // Blocks are numbered by Block::ordinal.
@@ -112,12 +84,8 @@ uint32_t TransferBlock(Block* block, uint32_t live, bool apply,
           live &= ~mask;
         }
       }
-    } else if (const CallKind kind = ClassifyCall(i);
-               kind != CallKind::kNotACall) {
-      if (kind == CallKind::kUnconditional) {
-        live &= ~kVolatileCR;
-      }
     } else if (i->opcode->flags & OPCODE_FLAG_VOLATILE) {
+      // Calls included: guest code need not follow the ABI's volatile fields.
       live = kAllCR;
     }
     i = prev;
@@ -140,9 +108,13 @@ bool DeadCRStoreEliminationPass::Run(HIRBuilder* builder) {
     return true;
   }
 
-  uint16_t block_count = 0;
+  // Block::ordinal is 16 bits.
+  size_t block_count = 0;
   for (auto block = builder->first_block(); block; block = block->next) {
-    block->ordinal = block_count++;
+    if (block_count > UINT16_MAX) {
+      return true;
+    }
+    block->ordinal = static_cast<uint16_t>(block_count++);
   }
   if (!block_count) {
     return true;
