@@ -1488,10 +1488,13 @@ bool A64Backend::Initialize(Processor* processor) {
   XbyakA64Allocator allocator;
   A64HelperEmitter thunk_emitter(this, &allocator);
 
+  // First, at offset 0 of the code cache, so that an encoded slot of 0 names
+  // it: the table reads zero where nothing wrote a slot, as for code the guest
+  // writes at run time, which no module commits a range for.
+  resolve_function_thunk_ = thunk_emitter.EmitResolveFunctionThunk();
   host_to_guest_thunk_ = thunk_emitter.EmitHostToGuestThunk();
   guest_to_host_thunk_ = thunk_emitter.EmitGuestToHostThunk();
   guest_to_host_thunk_no_vec_ = thunk_emitter.EmitGuestToHostThunkNoVec();
-  resolve_function_thunk_ = thunk_emitter.EmitResolveFunctionThunk();
 
   if (!host_to_guest_thunk_ || !guest_to_host_thunk_ ||
       !guest_to_host_thunk_no_vec_ || !resolve_function_thunk_) {
@@ -1525,9 +1528,16 @@ bool A64Backend::Initialize(Processor* processor) {
   static_cast<A64CodeCache*>(code_cache_.get())
       ->set_indirection_default_64(
           reinterpret_cast<uint64_t>(resolve_function_thunk_));
+  // A slot nothing wrote reads 0, which has to name the resolve thunk.
+  if (code_cache_->encoded_indirection() &&
+      reinterpret_cast<uint64_t>(resolve_function_thunk_) !=
+          code_cache_->execute_base_address()) {
+    XELOGE(
+        "A64Backend: the resolve thunk is not at the start of the code cache, "
+        "calls to code with no module would jump astray");
+  }
 
-  // Commit the indirection table range used by guest trampolines so that
-  // CreateGuestTrampoline can call AddIndirection without faulting.
+  // Commit the indirection table range used by guest trampolines.
   code_cache_->CommitExecutableRange(GUEST_TRAMPOLINE_BASE,
                                      GUEST_TRAMPOLINE_END);
 
