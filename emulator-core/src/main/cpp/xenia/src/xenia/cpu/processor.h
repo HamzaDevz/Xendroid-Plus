@@ -125,6 +125,15 @@ class Processor {
   bool IsDynamicCodeModule(const Module* module) const {
     return module && module == dynamic_code_module_.get();
   }
+  // Makes dynamic code compiled after this call keep every context store, so a
+  // guest handler sees current registers for a faulting access.
+  void KeepDynamicCodeContextStores() {
+    keep_dynamic_context_stores_.store(true, std::memory_order_relaxed);
+  }
+  bool KeepsContextStores(const Module* module) const {
+    return keep_dynamic_context_stores_.load(std::memory_order_relaxed) &&
+           module && module == dynamic_code_module_.get();
+  }
 
   Function* QueryFunction(uint32_t address);
   std::vector<Function*> FindFunctionsWithAddress(uint32_t address);
@@ -297,6 +306,7 @@ class Processor {
   // Consulted after modules_, so a loaded module always takes precedence.
   std::unique_ptr<Module> dynamic_code_module_;
   std::atomic<bool> dynamic_code_enabled_{false};
+  std::atomic<bool> keep_dynamic_context_stores_{false};
   std::atomic<SyscallHook> syscall_hook_{nullptr};
 
   // Code can be written through one address and run through another, so swept

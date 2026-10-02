@@ -430,7 +430,7 @@ bool MMIOHandler::ExceptionCallback(Exception* ex) {
     }
     return access_violation_callback_(
         global_critical_region_.Acquire(), access_violation_callback_context_,
-        reinterpret_cast<void*>(ex->fault_address()), is_write);
+        reinterpret_cast<void*>(ex->fault_address()), is_write, ex);
   }
   if (ex->fault_address() < uint64_t(virtual_membase_) ||
       ex->fault_address() > uint64_t(memory_end_)) {
@@ -474,7 +474,7 @@ bool MMIOHandler::ExceptionCallback(Exception* ex) {
       NoteFaultForCallback(ex);
       return access_violation_callback_(std::move(lock),
                                         access_violation_callback_context_,
-                                        fault_host_address, is_write);
+                                        fault_host_address, is_write, ex);
     }
     return false;
 #else
@@ -493,7 +493,7 @@ bool MMIOHandler::ExceptionCallback(Exception* ex) {
       NoteFaultForCallback(ex);
       return access_violation_callback_(std::move(lock),
                                         access_violation_callback_context_,
-                                        fault_host_address, is_write);
+                                        fault_host_address, is_write, ex);
     }
     return false;
 #endif
