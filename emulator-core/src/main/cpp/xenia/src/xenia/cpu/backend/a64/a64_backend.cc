@@ -1303,16 +1303,20 @@ static uint32_t DynamicCallCacheIndex(uint32_t guest_address) {
          (kA64DynamicCallCacheSize - 1);
 }
 
-// Resolves a target without an indirection slot and caches it per thread.
+// Resolves a target without an indirection slot and caches it per thread. A
+// direct bl is never a return and skips the return site checks.
 static uint64_t ResolveDynamicFunction(void* raw_context,
                                        uint64_t target_address,
-                                       uint32_t pending_pops) {
+                                       uint32_t pending_pops,
+                                       bool direct = false) {
   auto guest_context = reinterpret_cast<ppc::PPCContext*>(raw_context);
   bool is_return_site = false;
-  if (uint64_t return_address = ResolveDynamicReturn(
-          guest_context, static_cast<uint32_t>(target_address), pending_pops,
-          &is_return_site)) {
-    return return_address;
+  if (!direct) {
+    if (uint64_t return_address = ResolveDynamicReturn(
+            guest_context, static_cast<uint32_t>(target_address),
+            pending_pops, &is_return_site)) {
+      return return_address;
+    }
   }
   const uint64_t sweep_count = guest_context->processor->code_sweep_count();
   auto function = guest_context->processor->ResolveFunction(
@@ -1346,7 +1350,7 @@ static uint64_t ResolveDynamicFunction(void* raw_context,
   if (!bctx->dynamic_call_cache) {
     auto cache = new A64DynamicCallCacheEntry[kA64DynamicCallCacheSize];
     for (uint32_t i = 0; i < kA64DynamicCallCacheSize; ++i) {
-      cache[i] = {UINT32_MAX, 0, 0};
+      cache[i] = {UINT32_MAX, kA64DynamicCallAny, 0};
     }
     // Published filled, under the lock InvalidateDynamicCalls walks it with.
     auto global_lock = xe::global_critical_region::Acquire();
@@ -1359,6 +1363,7 @@ static uint64_t ResolveDynamicFunction(void* raw_context,
     auto& entry = bctx->dynamic_call_cache[DynamicCallCacheIndex(
         static_cast<uint32_t>(target_address))];
     entry.host_address = host_address;
+    entry.kind = direct ? kA64DynamicCallDirectOnly : kA64DynamicCallAny;
     entry.guest_address = static_cast<uint32_t>(target_address);
     // A sweep since the resolve began may have dropped the function before the
     // entry was there for it to clear. The fence pairs with the sweep's count
@@ -1374,6 +1379,10 @@ static uint64_t ResolveDynamicFunction(void* raw_context,
 
 uint64_t ResolveDynamicCall(void* raw_context, uint64_t target_address) {
   return ResolveDynamicFunction(raw_context, target_address, 0);
+}
+
+uint64_t ResolveDirectDynamicCall(void* raw_context, uint64_t target_address) {
+  return ResolveDynamicFunction(raw_context, target_address, 0, true);
 }
 
 // A tail branch pops the current function's stackpoint after resolving.

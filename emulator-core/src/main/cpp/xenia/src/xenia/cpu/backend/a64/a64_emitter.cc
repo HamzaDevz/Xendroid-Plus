@@ -60,6 +60,8 @@ using namespace Xbyak_aarch64;
 // Defined in a64_backend.cc.
 extern uint64_t ResolveFunction(void* raw_context, uint64_t target_address);
 extern uint64_t ResolveDynamicCall(void* raw_context, uint64_t target_address);
+extern uint64_t ResolveDirectDynamicCall(void* raw_context,
+                                         uint64_t target_address);
 extern uint64_t ResolveDynamicTailCall(void* raw_context,
                                        uint64_t target_address);
 
@@ -653,7 +655,7 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
     }
   } else if (code_cache_->has_indirection_table()) {
     mov(w16, function->address());
-    EmitDynamicCallLookup((instr->flags & hir::CALL_TAIL) != 0);
+    EmitDynamicCallLookup((instr->flags & hir::CALL_TAIL) != 0, true);
   } else {
     // No indirection table: resolve at runtime.
     mov(x0, x20);  // context
@@ -851,7 +853,8 @@ void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
   }
 }
 
-void A64Emitter::EmitDynamicCallLookup(bool tail) {
+void A64Emitter::EmitDynamicCallLookup(bool tail, bool direct) {
+  const bool direct_call = direct && !tail;
   Label miss;
   Label done;
   ldr(x14, ptr(x19, static_cast<uint32_t>(
@@ -866,6 +869,13 @@ void A64Emitter::EmitDynamicCallLookup(bool tail) {
                         offsetof(A64DynamicCallCacheEntry, guest_address))));
   cmp(w15, w16);
   b(NE, miss);
+  if (!direct_call) {
+    // An entry a direct call cached skips the return site checks a branch
+    // needs (kA64DynamicCallAny is 0).
+    ldr(w15, ptr(x14, static_cast<uint32_t>(
+                          offsetof(A64DynamicCallCacheEntry, kind))));
+    cbnz(w15, miss);
+  }
   ldr(x9, ptr(x14, static_cast<uint32_t>(
                        offsetof(A64DynamicCallCacheEntry, host_address))));
   // An entry the cache was initialized with holds no address.
@@ -875,8 +885,9 @@ void A64Emitter::EmitDynamicCallLookup(bool tail) {
   L(miss);
   // The host call can clobber x16, so hand the address over as its argument.
   mov(w1, w16);
-  CallNativeSafe(reinterpret_cast<void*>(tail ? ResolveDynamicTailCall
-                                              : ResolveDynamicCall));
+  CallNativeSafe(reinterpret_cast<void*>(direct_call ? ResolveDirectDynamicCall
+                                         : tail      ? ResolveDynamicTailCall
+                                                     : ResolveDynamicCall));
   mov(x9, x0);
 
   L(done);
