@@ -1730,6 +1730,11 @@ void KeInitializeApc_entry(pointer_t<XAPC> apc, lpvoid_t thread_ptr,
 }
 DECLARE_XBOXKRNL_EXPORT1(KeInitializeApc, kThreading, kImplemented);
 
+// A host thread, such as an I/O worker or a timer callback, queues and removes
+// APCs with the target's context (see XThread::ApcQueueContext). It must leave
+// the target's IRQL alone, as the target may change it at the same time.
+static bool CallerIsHostThread() { return !cpu::ThreadState::Get(); }
+
 uint32_t xeKeInsertQueueApc(XAPC* apc, uint32_t arg1, uint32_t arg2,
                             uint32_t priority_increment,
                             cpu::ppc::PPCContext* context) {
@@ -1738,7 +1743,9 @@ uint32_t xeKeInsertQueueApc(XAPC* apc, uint32_t arg1, uint32_t arg2,
     return 0;
   }
   auto target_thread = context->TranslateVirtual<X_KTHREAD*>(apc->thread_ptr);
-  auto old_irql = xeKeKfAcquireSpinLock(context, &target_thread->apc_lock);
+  const bool change_irql = !CallerIsHostThread();
+  auto old_irql =
+      xeKeKfAcquireSpinLock(context, &target_thread->apc_lock, change_irql);
   uint32_t result;
   if (!target_thread->may_queue_apcs || apc->enqueued) {
     result = 0;
@@ -1774,7 +1781,8 @@ uint32_t xeKeInsertQueueApc(XAPC* apc, uint32_t arg1, uint32_t arg2,
     */
     result = 1;
   }
-  xeKeKfReleaseSpinLock(context, &target_thread->apc_lock, old_irql);
+  xeKeKfReleaseSpinLock(context, &target_thread->apc_lock, old_irql,
+                        change_irql);
   return result;
 }
 
@@ -1793,7 +1801,9 @@ uint32_t xeKeRemoveQueueApc(XAPC* apc, cpu::ppc::PPCContext* context) {
     return 0;
   }
   auto target_thread = context->TranslateVirtual<X_KTHREAD*>(apc->thread_ptr);
-  auto old_irql = xeKeKfAcquireSpinLock(context, &target_thread->apc_lock);
+  const bool change_irql = !CallerIsHostThread();
+  auto old_irql =
+      xeKeKfAcquireSpinLock(context, &target_thread->apc_lock, change_irql);
 
   if (apc->enqueued) {
     result = true;
@@ -1801,7 +1811,8 @@ uint32_t xeKeRemoveQueueApc(XAPC* apc, cpu::ppc::PPCContext* context) {
     util::XeRemoveEntryList(&apc->list_entry, context);
     // todo: this is incomplete, there is more logic here in actual kernel
   }
-  xeKeKfReleaseSpinLock(context, &target_thread->apc_lock, old_irql);
+  xeKeKfReleaseSpinLock(context, &target_thread->apc_lock, old_irql,
+                        change_irql);
 
   return result ? 1 : 0;
 }
