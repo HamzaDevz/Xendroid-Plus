@@ -680,8 +680,9 @@ class Memory {
     kNotTaken,
     // The guest's handler returned, so retry the access.
     kTaken,
-    // User mode continues elsewhere and |ex| was diverted there, so the access
-    // is abandoned.
+    // |ex| was diverted, so the fault's own host frames are gone. User mode
+    // continues elsewhere, or a thunk runs the handler and resumes the access
+    // itself.
     kDiverted,
   };
 

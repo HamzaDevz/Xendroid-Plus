@@ -100,6 +100,17 @@ uint32_t get_page_count(uint32_t value, uint32_t page_size) {
 
 static Memory* active_memory_ = nullptr;
 
+// A file view can replace a POSIX reservation, so one holds the user mode
+// window.
+// TODO(has207): a Win32 view only replaces a placeholder, and a window of them
+// has to be split one page at a time, so there the window is released again
+// and another allocation can land in a page that hasn't faulted in yet.
+#if XE_PLATFORM_WIN32
+constexpr bool kHoldUserWindow = false;
+#else
+constexpr bool kHoldUserWindow = true;
+#endif  // XE_PLATFORM_WIN32
+
 void CrashDump() {
   static std::atomic<int> in_crash_dump(0);
   if (in_crash_dump.fetch_add(1)) {
@@ -186,6 +197,10 @@ Memory::~Memory() {
   // Unmap all views and close mapping.
   if (mapping_ != xe::memory::kFileMappingHandleInvalid) {
     FlushUserPageTable();
+    if (kHoldUserWindow && user_virtual_membase()) {
+      xe::memory::ReleaseFileViewPages(mapping_, user_virtual_membase(),
+                                       0x100000000ull);
+    }
     UnmapViews();
     xe::memory::CloseFileMappingHandle(mapping_, file_name_);
     mapping_base_ = nullptr;
@@ -530,11 +545,12 @@ void Memory::KernelPageTableWriteThunk(void* ppc_context, void* context,
 
 bool Memory::ClaimUserWindow(uint8_t* user_membase) {
   // The page table drives every segment so the window starts empty and each
-  // fault maps the 64 KB page it lands in. Reserving the whole window first
-  // proves nothing else holds any of it.
-  // TODO(has207): the window is released again and another allocation can land
-  // in a page that hasn't faulted in yet. Holding it needs placeholders on
-  // Windows and a PROT_NONE reservation that views replace on POSIX.
+  // fault maps the 64 KB page it lands in. The reservation holds the window
+  // until then, and each view replaces the part of it the view covers.
+  if (kHoldUserWindow) {
+    return xe::memory::ReserveFileViewPages(user_membase, 0x100000000ull);
+  }
+  // Reserving the whole window only proves nothing else holds any of it.
   void* window = xe::memory::AllocFixed(user_membase, 0x100000000ull,
                                         xe::memory::AllocationType::kReserve,
                                         xe::memory::PageAccess::kNoAccess);
@@ -835,7 +851,7 @@ bool Memory::AccessViolationCallback(
         const UserFaultResult taken = hook(user_address, is_write, ex);
         global_lock_locked_once.lock();
         if (taken == UserFaultResult::kDiverted) {
-          // The access is abandoned, so there is nothing to map.
+          // The fault took the access over, so there is nothing to map now.
           return true;
         }
         if (taken == UserFaultResult::kTaken &&
