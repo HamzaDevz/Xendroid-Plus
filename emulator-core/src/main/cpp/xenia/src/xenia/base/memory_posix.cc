@@ -214,8 +214,16 @@ static bool IsViewReservation(const void* base_address, size_t length) {
 
 // Puts a reservation over the range, dropping whatever is mapped in it.
 static bool ReserveRange(void* base_address, size_t length) {
-  return mmap(base_address, length, PROT_NONE,
-              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == base_address;
+  void* result = mmap(base_address, length, PROT_NONE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+  if (result == base_address) {
+    return true;
+  }
+  // Callers drop the result, so the log is the only sign that a view stayed
+  // mapped where the reservation should have come back.
+  XELOGE("mmap(PROT_NONE, {}, 0x{:X}) failed: {} ({})", base_address, length,
+         strerror(errno), errno);
+  return false;
 }
 
 static void RememberReservation(void* base_address, size_t length) {
