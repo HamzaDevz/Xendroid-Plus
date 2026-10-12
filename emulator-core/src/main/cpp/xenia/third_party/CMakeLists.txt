@@ -470,6 +470,7 @@ add_library(mbedtls STATIC
   mbedtls/library/des.c
   mbedtls/library/dhm.c
   mbedtls/library/md.c
+  mbedtls/library/md5.c
   mbedtls/library/platform_util.c
   mbedtls/library/sha1.c
   mbedtls/library/sha256.c
