@@ -16,8 +16,6 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 
-#include "third_party/crypto/sha256.cpp"
-#include "third_party/crypto/sha256.h"
 #include "xenia/kernel/xboxkrnl/xecrypt_aes.h"
 #include "xenia/kernel/xboxkrnl/xecrypt_des.h"
 #include "xenia/kernel/xboxkrnl/xecrypt_rsa.h"
@@ -38,13 +36,6 @@ struct XECRYPT_RC4_STATE {
   uint8_t j;       // 0x101
 };
 static_assert_size(XECRYPT_RC4_STATE, 0x102);
-
-// TODO: Size of this struct hasn't been confirmed yet.
-struct XECRYPT_SHA256_STATE {
-  xe::be<uint32_t> count;     // 0x0
-  xe::be<uint32_t> state[8];  // 0x4
-  uint8_t buffer[64];         // 0x24
-};
 
 // TODO: Size of this struct hasn't been confirmed yet.
 struct XECRYPT_SHA512_STATE {
@@ -470,53 +461,19 @@ void XeCryptMd5_entry(lpvoid_t input_1, dword_t input_1_size, lpvoid_t input_2,
 DECLARE_XBOXKRNL_EXPORT1(XeCryptMd5, kNone, kImplemented);
 
 void XeCryptSha256Init_entry(pointer_t<XECRYPT_SHA256_STATE> sha_state) {
-  sha_state.Zero();
-
-  sha_state->state[0] = 0x6a09e667;
-  sha_state->state[1] = 0xbb67ae85;
-  sha_state->state[2] = 0x3c6ef372;
-  sha_state->state[3] = 0xa54ff53a;
-  sha_state->state[4] = 0x510e527f;
-  sha_state->state[5] = 0x9b05688c;
-  sha_state->state[6] = 0x1f83d9ab;
-  sha_state->state[7] = 0x5be0cd19;
+  XeCryptSha256Init(sha_state);
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptSha256Init, kNone, kImplemented);
 
 void XeCryptSha256Update_entry(pointer_t<XECRYPT_SHA256_STATE> sha_state,
                                lpvoid_t input, dword_t input_size) {
-  sha256::SHA256 sha;
-  std::copy(std::begin(sha_state->state), std::end(sha_state->state),
-            sha.getHashValues());
-  std::copy(std::begin(sha_state->buffer), std::end(sha_state->buffer),
-            sha.getBuffer());
-  sha.setTotalSize(sha_state->count);
-
-  sha.add(input, input_size);
-
-  std::copy_n(sha.getHashValues(), xe::countof(sha_state->state),
-              sha_state->state);
-  std::copy_n(sha.getBuffer(), xe::countof(sha_state->buffer),
-              sha_state->buffer);
-  sha_state->count = static_cast<uint32_t>(sha.getTotalSize());
+  XeCryptSha256Update(sha_state, input.as<uint8_t*>(), input_size);
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptSha256Update, kNone, kImplemented);
 
 void XeCryptSha256Final_entry(pointer_t<XECRYPT_SHA256_STATE> sha_state,
                               pointer_t<uint8_t> out, dword_t out_size) {
-  sha256::SHA256 sha;
-  std::copy(std::begin(sha_state->state), std::end(sha_state->state),
-            sha.getHashValues());
-  std::copy(std::begin(sha_state->buffer), std::end(sha_state->buffer),
-            sha.getBuffer());
-  sha.setTotalSize(sha_state->count);
-
-  uint8_t hash[32];
-  sha.getHash(hash);
-
-  std::copy_n(hash, std::min<size_t>(xe::countof(hash), out_size),
-              static_cast<uint8_t*>(out));
-  std::copy(std::begin(hash), std::end(hash), sha_state->buffer);
+  XeCryptSha256Final(sha_state, out, out_size);
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptSha256Final, kNone, kImplemented);
 
