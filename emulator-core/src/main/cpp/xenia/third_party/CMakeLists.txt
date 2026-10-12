@@ -468,6 +468,24 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC imgui PRIVATE stb)
 
 # ==============================================================================
+# mbedtls (crypto modules only, chosen in mbedtls-xenia/xenia_mbedtls_config.h)
+# ==============================================================================
+add_library(mbedtls STATIC
+  mbedtls/library/bignum.c
+  mbedtls/library/bignum_core.c
+  mbedtls/library/constant_time.c
+  mbedtls/library/des.c
+  mbedtls/library/dhm.c
+  mbedtls/library/md.c
+  mbedtls/library/platform_util.c
+  mbedtls/library/sha1.c
+)
+target_include_directories(mbedtls PUBLIC mbedtls/include mbedtls-xenia)
+target_compile_definitions(mbedtls PUBLIC
+  "MBEDTLS_CONFIG_FILE=\"xenia_mbedtls_config.h\""
+)
+
+# ==============================================================================
 # miniaudio (header-only)
 # ==============================================================================
 add_library(miniaudio INTERFACE)
