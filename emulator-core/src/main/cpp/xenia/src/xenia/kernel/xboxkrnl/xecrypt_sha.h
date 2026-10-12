@@ -20,6 +20,7 @@
 
 #include "third_party/mbedtls/include/mbedtls/sha1.h"
 #include "third_party/mbedtls/include/mbedtls/sha256.h"
+#include "third_party/mbedtls/include/mbedtls/sha512.h"
 
 namespace xe {
 namespace kernel {
@@ -37,6 +38,13 @@ struct XECRYPT_SHA256_STATE {
   xe::be<uint32_t> count;     // 0x0
   xe::be<uint32_t> state[8];  // 0x4
   uint8_t buffer[64];         // 0x24
+};
+
+// TODO: Size of this struct hasn't been confirmed yet.
+struct XECRYPT_SHA512_STATE {
+  xe::be<uint64_t> count;     // 0x0
+  xe::be<uint64_t> state[8];  // 0x8
+  uint8_t buffer[128];        // 0x48
 };
 
 struct XECRYPT_HMACSHA_STATE {
@@ -157,6 +165,49 @@ inline void XeCryptSha256Final(XECRYPT_SHA256_STATE* state, uint8_t* out,
   auto context = LoadSha256(*state);
   uint8_t digest[32];
   mbedtls_sha256_finish(&context, digest);
+  if (out_size) {
+    std::memcpy(out, digest, std::min<uint32_t>(out_size, sizeof(digest)));
+  }
+  std::memcpy(state->buffer, digest, sizeof(digest));
+}
+
+inline mbedtls_sha512_context LoadSha512(const XECRYPT_SHA512_STATE& state) {
+  mbedtls_sha512_context context;
+  mbedtls_sha512_init(&context);
+  context.MBEDTLS_PRIVATE(total)[0] = state.count;
+  std::ranges::copy(state.state, context.MBEDTLS_PRIVATE(state));
+  std::ranges::copy(state.buffer, context.MBEDTLS_PRIVATE(buffer));
+  return context;
+}
+
+inline void StoreSha512(const mbedtls_sha512_context& context,
+                        XECRYPT_SHA512_STATE& state) {
+  state.count = context.MBEDTLS_PRIVATE(total)[0];
+  std::ranges::copy(context.MBEDTLS_PRIVATE(state), state.state);
+  std::ranges::copy(context.MBEDTLS_PRIVATE(buffer), state.buffer);
+}
+
+inline void XeCryptSha512Init(XECRYPT_SHA512_STATE* state) {
+  mbedtls_sha512_context context;
+  mbedtls_sha512_init(&context);
+  mbedtls_sha512_starts(&context, 0);
+  StoreSha512(context, *state);
+}
+
+inline void XeCryptSha512Update(XECRYPT_SHA512_STATE* state,
+                                const uint8_t* input, uint32_t input_size) {
+  auto context = LoadSha512(*state);
+  mbedtls_sha512_update(&context, input, input_size);
+  StoreSha512(context, *state);
+}
+
+// Leaves the count and state words alone and copies the digest into the
+// buffer.
+inline void XeCryptSha512Final(XECRYPT_SHA512_STATE* state, uint8_t* out,
+                               uint32_t out_size) {
+  auto context = LoadSha512(*state);
+  uint8_t digest[64];
+  mbedtls_sha512_finish(&context, digest);
   if (out_size) {
     std::memcpy(out, digest, std::min<uint32_t>(out_size, sizeof(digest)));
   }

@@ -12,5 +12,6 @@
 #define MBEDTLS_MD_C
 #define MBEDTLS_SHA1_C
 #define MBEDTLS_SHA256_C
+#define MBEDTLS_SHA512_C
 
 #endif  // XENIA_MBEDTLS_CONFIG_H_

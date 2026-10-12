@@ -474,6 +474,7 @@ add_library(mbedtls STATIC
   mbedtls/library/platform_util.c
   mbedtls/library/sha1.c
   mbedtls/library/sha256.c
+  mbedtls/library/sha512.c
 )
 target_include_directories(mbedtls PUBLIC mbedtls/include mbedtls-xenia)
 target_compile_definitions(mbedtls PUBLIC
