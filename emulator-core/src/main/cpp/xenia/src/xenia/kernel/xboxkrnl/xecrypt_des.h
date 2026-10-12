@@ -52,16 +52,34 @@ inline void XeCryptDesKey(XECRYPT_DES_STATE* state, const uint8_t* key) {
   std::memcpy(state->key, key, sizeof(state->key));
 }
 
+inline void SetDesKey(mbedtls_des_context* context,
+                      const XECRYPT_DES_STATE* state, bool encrypt) {
+  if (encrypt) {
+    mbedtls_des_setkey_enc(context, state->key);
+  } else {
+    mbedtls_des_setkey_dec(context, state->key);
+  }
+}
+
 inline void XeCryptDesEcb(const XECRYPT_DES_STATE* state, const uint8_t* input,
                           uint8_t* output, bool encrypt) {
   mbedtls_des_context context;
   mbedtls_des_init(&context);
-  if (encrypt) {
-    mbedtls_des_setkey_enc(&context, state->key);
-  } else {
-    mbedtls_des_setkey_dec(&context, state->key);
-  }
+  SetDesKey(&context, state, encrypt);
   mbedtls_des_crypt_ecb(&context, input, output);
+  mbedtls_des_free(&context);
+}
+
+// A partial block at the end is left alone.
+inline void XeCryptDesCbc(const XECRYPT_DES_STATE* state, const uint8_t* input,
+                          uint32_t input_size, uint8_t* output, uint8_t* feed,
+                          bool encrypt) {
+  mbedtls_des_context context;
+  mbedtls_des_init(&context);
+  SetDesKey(&context, state, encrypt);
+  mbedtls_des_crypt_cbc(&context,
+                        encrypt ? MBEDTLS_DES_ENCRYPT : MBEDTLS_DES_DECRYPT,
+                        input_size & ~7u, feed, input, output);
   mbedtls_des_free(&context);
 }
 

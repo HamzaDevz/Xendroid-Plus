@@ -698,6 +698,14 @@ void XeCryptDesEcb_entry(pointer_t<XECRYPT_DES_STATE> state_ptr, lpvoid_t inp,
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptDesEcb, kNone, kImplemented);
 
+void XeCryptDesCbc_entry(pointer_t<XECRYPT_DES_STATE> state_ptr, lpvoid_t inp,
+                         dword_t inp_size, lpvoid_t out, lpvoid_t feed,
+                         dword_t encrypt) {
+  XeCryptDesCbc(state_ptr, inp.as<uint8_t*>(), inp_size, out.as<uint8_t*>(),
+                feed.as<uint8_t*>(), encrypt != 0);
+}
+DECLARE_XBOXKRNL_EXPORT1(XeCryptDesCbc, kNone, kImplemented);
+
 // Sets bit 0 to make the parity odd
 void XeCryptDesParity_entry(lpvoid_t inp, dword_t inp_size, lpvoid_t out_ptr) {
   XeCryptDesParity(inp.as<uint8_t*>(), inp_size, out_ptr.as<uint8_t*>());
