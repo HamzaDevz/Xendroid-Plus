@@ -24,6 +24,7 @@
 #include "third_party/crypto/sha256.cpp"
 #include "third_party/crypto/sha256.h"
 #include "xenia/kernel/xboxkrnl/xecrypt_rsa.h"
+#include "xenia/kernel/xboxkrnl/xecrypt_sha.h"
 
 extern "C" {
 #include "third_party/FFmpeg/libavutil/md5.h"
@@ -41,13 +42,6 @@ struct XECRYPT_RC4_STATE {
   uint8_t j;       // 0x101
 };
 static_assert_size(XECRYPT_RC4_STATE, 0x102);
-
-struct XECRYPT_SHA_STATE {
-  xe::be<uint32_t> count;     // 0x0
-  xe::be<uint32_t> state[5];  // 0x4
-  uint8_t buffer[64];         // 0x18
-};
-static_assert_size(XECRYPT_SHA_STATE, 0x58);
 
 struct XECRYPT_HMACSHA_STATE {
   XECRYPT_SHA_STATE sha_state[2];
@@ -426,59 +420,20 @@ void XeCryptRc4_entry(lpvoid_t key, dword_t key_size, lpvoid_t data,
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptRc4, kNone, kImplemented);
 
-void InitSha1(sha1::SHA1* sha, const XECRYPT_SHA_STATE* state) {
-  uint32_t digest[5];
-  std::copy(std::begin(state->state), std::end(state->state), digest);
-
-  sha->init(digest, state->buffer, state->count);
-}
-
-void StoreSha1(const sha1::SHA1* sha, XECRYPT_SHA_STATE* state) {
-  std::copy_n(sha->getDigest(), xe::countof(state->state), state->state);
-
-  state->count = static_cast<uint32_t>(sha->getByteCount());
-  std::copy_n(sha->getBlock(), sha->getBlockByteIndex(), state->buffer);
-}
-
 void XeCryptShaInit_entry(pointer_t<XECRYPT_SHA_STATE> sha_state) {
-  sha_state.Zero();
-
-  sha_state->state[0] = 0x67452301;
-  sha_state->state[1] = 0xEFCDAB89;
-  sha_state->state[2] = 0x98BADCFE;
-  sha_state->state[3] = 0x10325476;
-  sha_state->state[4] = 0xC3D2E1F0;
+  XeCryptShaInit(sha_state);
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptShaInit, kNone, kImplemented);
 
 void XeCryptShaUpdate_entry(pointer_t<XECRYPT_SHA_STATE> sha_state,
                             lpvoid_t input, dword_t input_size) {
-  sha1::SHA1 sha;
-  InitSha1(&sha, sha_state);
-
-  sha.processBytes(input, input_size);
-
-  StoreSha1(&sha, sha_state);
+  XeCryptShaUpdate(sha_state, input.as<uint8_t*>(), input_size);
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptShaUpdate, kNone, kImplemented);
 
 void XeCryptShaFinal_entry(pointer_t<XECRYPT_SHA_STATE> sha_state,
                            pointer_t<uint8_t> out, dword_t out_size) {
-  sha1::SHA1 sha;
-  InitSha1(&sha, sha_state);
-
-  uint8_t digest[0x14];
-  sha.finalize(digest);
-
-  std::copy_n(digest, std::min<size_t>(xe::countof(digest), out_size),
-              static_cast<uint8_t*>(out));
-  std::copy_n(sha.getDigest(), xe::countof(sha_state->state), sha_state->state);
-  // The console pads in place, so the last block it compressed is left in the
-  // context buffer, not the message tail. Only shows up when a title finalizes
-  // the same context twice and the padding needed a second block, where the
-  // tail no longer survives the first call.
-  std::copy_n(sha.getBlock(), xe::countof(sha_state->buffer),
-              sha_state->buffer);
+  XeCryptShaFinal(sha_state, out, out_size);
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptShaFinal, kNone, kImplemented);
 
@@ -486,22 +441,9 @@ void XeCryptSha_entry(lpvoid_t input_1, dword_t input_1_size, lpvoid_t input_2,
                       dword_t input_2_size, lpvoid_t input_3,
                       dword_t input_3_size, lpvoid_t output,
                       dword_t output_size) {
-  sha1::SHA1 sha;
-
-  if (input_1 && input_1_size) {
-    sha.processBytes(input_1, input_1_size);
-  }
-  if (input_2 && input_2_size) {
-    sha.processBytes(input_2, input_2_size);
-  }
-  if (input_3 && input_3_size) {
-    sha.processBytes(input_3, input_3_size);
-  }
-
-  uint8_t digest[0x14];
-  sha.finalize(digest);
-  std::copy_n(digest, std::min<size_t>(xe::countof(digest), output_size),
-              output.as<uint8_t*>());
+  XeCryptSha(input_1.as<uint8_t*>(), input_1_size, input_2.as<uint8_t*>(),
+             input_2_size, input_3.as<uint8_t*>(), input_3_size,
+             output.as<uint8_t*>(), output_size);
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptSha, kNone, kImplemented);
 
