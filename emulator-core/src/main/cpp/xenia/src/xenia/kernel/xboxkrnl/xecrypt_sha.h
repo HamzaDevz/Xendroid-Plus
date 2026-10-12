@@ -11,6 +11,7 @@
 #define XENIA_KERNEL_XBOXKRNL_XECRYPT_SHA_H_
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 
@@ -29,6 +30,11 @@ struct XECRYPT_SHA_STATE {
   uint8_t buffer[64];         // 0x18
 };
 static_assert_size(XECRYPT_SHA_STATE, 0x58);
+
+struct XECRYPT_HMACSHA_STATE {
+  XECRYPT_SHA_STATE sha_state[2];
+};
+static_assert_size(XECRYPT_HMACSHA_STATE, 0xB0);
 
 inline mbedtls_sha1_context LoadSha(const XECRYPT_SHA_STATE& state) {
   mbedtls_sha1_context context;
@@ -103,6 +109,58 @@ inline void XeCryptSha(const uint8_t* input_1, uint32_t input_1_size,
     XeCryptShaUpdate(&state, input_3, input_3_size);
   }
   XeCryptShaFinal(&state, out, out_size);
+}
+
+// Keys over a block are truncated, not hashed as in RFC 2104.
+inline void XeCryptHmacShaInit(XECRYPT_HMACSHA_STATE* state, const uint8_t* key,
+                               uint32_t key_size) {
+  key_size = std::min<uint32_t>(key_size, 64);
+  std::array<uint8_t, 64> inner_pad;
+  std::array<uint8_t, 64> outer_pad;
+  inner_pad.fill(0x36);
+  outer_pad.fill(0x5C);
+  for (uint32_t i = 0; i < key_size; i++) {
+    inner_pad[i] ^= key[i];
+    outer_pad[i] ^= key[i];
+  }
+
+  XeCryptShaInit(&state->sha_state[0]);
+  XeCryptShaUpdate(&state->sha_state[0], inner_pad.data(), 64);
+  XeCryptShaInit(&state->sha_state[1]);
+  XeCryptShaUpdate(&state->sha_state[1], outer_pad.data(), 64);
+}
+
+inline void XeCryptHmacShaUpdate(XECRYPT_HMACSHA_STATE* state,
+                                 const uint8_t* input, uint32_t input_size) {
+  XeCryptShaUpdate(&state->sha_state[0], input, input_size);
+}
+
+inline void XeCryptHmacShaFinal(XECRYPT_HMACSHA_STATE* state, uint8_t* out,
+                                uint32_t out_size) {
+  XeCryptShaFinal(&state->sha_state[0], nullptr, 0);
+  XeCryptShaUpdate(&state->sha_state[1],
+                   reinterpret_cast<const uint8_t*>(state->sha_state[0].state),
+                   sizeof(XECRYPT_SHA_STATE::state));
+  XeCryptShaFinal(&state->sha_state[1], out, out_size);
+}
+
+inline void XeCryptHmacSha(const uint8_t* key, uint32_t key_size,
+                           const uint8_t* inp_1, uint32_t inp_1_size,
+                           const uint8_t* inp_2, uint32_t inp_2_size,
+                           const uint8_t* inp_3, uint32_t inp_3_size,
+                           uint8_t* out, uint32_t out_size) {
+  XECRYPT_HMACSHA_STATE state;
+  XeCryptHmacShaInit(&state, key, key_size);
+  if (inp_1_size) {
+    XeCryptHmacShaUpdate(&state, inp_1, inp_1_size);
+  }
+  if (inp_2_size) {
+    XeCryptHmacShaUpdate(&state, inp_2, inp_2_size);
+  }
+  if (inp_3_size) {
+    XeCryptHmacShaUpdate(&state, inp_3, inp_3_size);
+  }
+  XeCryptHmacShaFinal(&state, out, out_size);
 }
 
 }  // namespace xboxkrnl
