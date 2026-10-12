@@ -16,12 +16,9 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 
-#include "third_party/crypto/des/des.cpp"
-#include "third_party/crypto/des/des.h"
-#include "third_party/crypto/des/des3.h"
-#include "third_party/crypto/des/descbc.h"
 #include "third_party/crypto/sha256.cpp"
 #include "third_party/crypto/sha256.h"
+#include "xenia/kernel/xboxkrnl/xecrypt_des.h"
 #include "xenia/kernel/xboxkrnl/xecrypt_rsa.h"
 #include "xenia/kernel/xboxkrnl/xecrypt_sha.h"
 
@@ -93,14 +90,6 @@ struct XECRYPT_SIG {
   xe::be<uint8_t> End;
 };
 static_assert_size(XECRYPT_SIG, 0x100);  // size 256
-
-struct XECRYPT_DES_STATE {
-  uint32_t keytab[16][2];
-};
-
-struct XECRYPT_DES3_STATE {
-  XECRYPT_DES_STATE des_state[3];
-};
 
 struct XECRYPT_AES_STATE {
   uint8_t keytabenc[11][4][4];  // 0x0
@@ -697,80 +686,45 @@ void XeCryptRandom_entry(lpvoid_t buf, dword_t buf_size) {
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptRandom, kNone, kStub);
 
-void XeCryptDesKey_entry(pointer_t<XECRYPT_DES_STATE> state_ptr,
-                         lpqword_t key) {
-  DES des(key[0]);
-
-  std::memcpy(state_ptr->keytab, des.get_sub_key(), 128);
+void XeCryptDesKey_entry(pointer_t<XECRYPT_DES_STATE> state_ptr, lpvoid_t key) {
+  XeCryptDesKey(state_ptr, key.as<uint8_t*>());
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptDesKey, kNone, kImplemented);
 
-void XeCryptDesEcb_entry(pointer_t<XECRYPT_DES_STATE> state_ptr, lpqword_t inp,
-                         lpqword_t out, dword_t encrypt) {
-  DES des(reinterpret_cast<uint64_t*>(state_ptr->keytab));
-  if (encrypt) {
-    *out = des.encrypt(*inp);
-  } else {
-    *out = des.decrypt(*inp);
-  }
+void XeCryptDesEcb_entry(pointer_t<XECRYPT_DES_STATE> state_ptr, lpvoid_t inp,
+                         lpvoid_t out, dword_t encrypt) {
+  XeCryptDesEcb(state_ptr, inp.as<uint8_t*>(), out.as<uint8_t*>(),
+                encrypt != 0);
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptDesEcb, kNone, kImplemented);
 
 // Sets bit 0 to make the parity odd
 void XeCryptDesParity_entry(lpvoid_t inp, dword_t inp_size, lpvoid_t out_ptr) {
-  DES::set_parity(inp, inp_size, out_ptr);
+  XeCryptDesParity(inp.as<uint8_t*>(), inp_size, out_ptr.as<uint8_t*>());
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptDesParity, kNone, kImplemented);
 
 void XeCryptDes3Key_entry(pointer_t<XECRYPT_DES3_STATE> state_ptr,
-                          lpqword_t key) {
-  DES3 des3(key[0], key[1], key[2]);
-  DES* des = des3.getDES();
-
-  // Store our DES state into the state.
-  for (int i = 0; i < 3; i++) {
-    std::memcpy(state_ptr->des_state[i].keytab, des[i].get_sub_key(), 128);
-  }
+                          lpvoid_t key) {
+  XeCryptDes3Key(state_ptr, key.as<uint8_t*>());
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptDes3Key, kNone, kImplemented);
 
-void XeCryptDes3Ecb_entry(pointer_t<XECRYPT_DES3_STATE> state_ptr,
-                          lpqword_t inp, lpqword_t out, dword_t encrypt) {
-  DES3 des3((ui64*)state_ptr->des_state[0].keytab,
-            (ui64*)state_ptr->des_state[1].keytab,
-            (ui64*)state_ptr->des_state[2].keytab);
-
-  if (encrypt) {
-    *out = des3.encrypt(*inp);
-  } else {
-    *out = des3.decrypt(*inp);
-  }
+void XeCryptDes3Ecb_entry(pointer_t<XECRYPT_DES3_STATE> state_ptr, lpvoid_t inp,
+                          lpvoid_t out, dword_t encrypt) {
+  XeCryptDes3Ecb(state_ptr, inp.as<uint8_t*>(), out.as<uint8_t*>(),
+                 encrypt != 0);
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptDes3Ecb, kNone, kImplemented);
 
-void XeCryptDes3Cbc_entry(pointer_t<XECRYPT_DES3_STATE> state_ptr,
-                          lpqword_t inp, dword_t inp_size, lpqword_t out,
-                          lpqword_t feed, dword_t encrypt) {
-  DES3 des3((ui64*)state_ptr->des_state[0].keytab,
-            (ui64*)state_ptr->des_state[1].keytab,
-            (ui64*)state_ptr->des_state[2].keytab);
-
+void XeCryptDes3Cbc_entry(pointer_t<XECRYPT_DES3_STATE> state_ptr, lpvoid_t inp,
+                          dword_t inp_size, lpvoid_t out, lpvoid_t feed,
+                          dword_t encrypt) {
   // DES can only do 8-byte chunks at a time!
   assert_true(inp_size % 8 == 0);
 
-  uint64_t last_block = *feed;
-  for (uint32_t i = 0; i < inp_size / 8; i++) {
-    uint64_t block = inp[i];
-    if (encrypt) {
-      last_block = des3.encrypt(block ^ last_block);
-      out[i] = last_block;
-    } else {
-      out[i] = des3.decrypt(block) ^ last_block;
-      last_block = block;
-    }
-  }
-
-  *feed = last_block;
+  XeCryptDes3Cbc(state_ptr, inp.as<uint8_t*>(), inp_size, out.as<uint8_t*>(),
+                 feed.as<uint8_t*>(), encrypt != 0);
 }
 DECLARE_XBOXKRNL_EXPORT1(XeCryptDes3Cbc, kNone, kImplemented);
 
