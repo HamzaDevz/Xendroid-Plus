@@ -28,14 +28,6 @@ if(XE_TARGET_AARCH64)
 endif()
 
 # ==============================================================================
-# aes_128
-# ==============================================================================
-add_library(aes_128 STATIC
-  aes_128/unroll/aes.c
-)
-target_include_directories(aes_128 PUBLIC aes_128)
-
-# ==============================================================================
 # asio (header-only)
 # ==============================================================================
 add_library(asio INTERFACE)
@@ -471,6 +463,7 @@ target_include_directories(imgui PUBLIC imgui PRIVATE stb)
 # mbedtls (crypto modules only, chosen in mbedtls-xenia/xenia_mbedtls_config.h)
 # ==============================================================================
 add_library(mbedtls STATIC
+  mbedtls/library/aes.c
   mbedtls/library/bignum.c
   mbedtls/library/bignum_core.c
   mbedtls/library/constant_time.c
