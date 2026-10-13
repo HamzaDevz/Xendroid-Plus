@@ -55,9 +55,11 @@ class GraphicsUploadBufferPool {
   GraphicsUploadBufferPool(size_t page_size) : page_size_(page_size) {}
 
   // Request to write data in a single piece, creating a new page if the current
-  // one doesn't have enough free space.
+  // one doesn't have enough free space. reserve: how many bytes from the
+  // returned offset must be in the page even though only size are used (a
+  // descriptor whose range goes past the data written).
   Page* Request(uint64_t submission_index, size_t size, size_t alignment,
-                size_t& offset_out);
+                size_t& offset_out, size_t reserve = 0);
   // Request to write data in multiple parts, filling the buffer entirely.
   Page* RequestPartial(uint64_t submission_index, size_t size, size_t alignment,
                        size_t& offset_out, size_t& size_out);

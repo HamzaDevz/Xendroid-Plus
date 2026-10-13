@@ -33,15 +33,17 @@ VulkanUploadBufferPool::VulkanUploadBufferPool(
 
 uint8_t* VulkanUploadBufferPool::Request(uint64_t submission_index, size_t size,
                                          size_t alignment, VkBuffer& buffer_out,
-                                         VkDeviceSize& offset_out) {
+                                         VkDeviceSize& offset_out,
+                                         size_t reserve) {
   size_t offset;
   const VulkanPage* page =
       static_cast<const VulkanPage*>(GraphicsUploadBufferPool::Request(
-          submission_index, size, alignment, offset));
+          submission_index, size, alignment, offset, reserve));
   if (!page) {
     return nullptr;
   }
-  if (VkDeviceSize(offset) + VkDeviceSize(size) > page->mapping_size_) {
+  if (VkDeviceSize(offset) + VkDeviceSize(std::max(size, reserve)) >
+      page->mapping_size_) {
     XELOGE(
         "Vulkan upload pool handed out {}+{} bytes in a page mapping {} bytes "
         "at {}",

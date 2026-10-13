@@ -13,6 +13,7 @@
 #include <array>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -93,6 +94,22 @@ class VulkanTextureCache final : public TextureCache {
   // may be taken as matching the memory any more.
   void InvalidateResolveStoreTracking();
 
+  // Diagnostics: the textures waiting to be recreated for promotion at the
+  // last submission, and since the previous call, the attempts that recreated
+  // one, found no texture with the key, or found it still in use.
+  struct PromotionQueueStats {
+    uint64_t pending = 0;
+    uint64_t recreated = 0;
+    uint64_t not_found = 0;
+    uint64_t in_flight = 0;
+  };
+  PromotionQueueStats TakePromotionQueueStats() {
+    PromotionQueueStats stats = promotion_queue_stats_;
+    promotion_queue_stats_ = PromotionQueueStats();
+    stats.pending = resolve_dest_promotion_queue_.size();
+    return stats;
+  }
+
  private:
   class VulkanTexture;
   // Textures that already existed when a resolve first targeted them: they
@@ -100,6 +117,10 @@ class VulkanTextureCache final : public TextureCache {
   // they can be promoted. Without this only textures that happen to be created
   // while a matching resolve is live ever get promoted.
   std::vector<TextureKey> resolve_dest_promotion_queue_;
+  PromotionQueueStats promotion_queue_stats_;
+  // Keys whose promoted image the driver refused, created unpromoted.
+  std::unordered_set<TextureKey, TextureKey::Hasher>
+      resolve_dest_promotion_refused_;
   // Promoted textures by guest base address, so an in-pass resolve can find
   // the image it is about to fill. Several textures of different formats can
   // share a base. Entries are removed by ~VulkanTexture.
@@ -134,6 +155,19 @@ class VulkanTextureCache final : public TextureCache {
   VulkanTexture* FindResolveDestTexture(
       uint32_t base, uint32_t* base_delta_out = nullptr) const;
   bool ShouldPromoteToResolveDest(const TextureKey& key) const;
+  // The format of the image of a texture with the key, and with mutable
+  // formats the other one of its unsigned and signed versions.
+  void GetTextureImageFormats(const TextureKey& key,
+                              VkFormat formats_out[2]) const;
+  // The uint format a resolve stores into the image of a texture with the key
+  // through, VK_FORMAT_UNDEFINED if it can't be a resolve destination - the
+  // structural match of ShouldPromoteToResolveDest, then the host format.
+  VkFormat GetResolveDestUintFormat(const TextureKey& key,
+                                    VkFormat host_format) const;
+  // Whether a texture with the key created now would be promoted (the
+  // recreation queue takes only those - one that wouldn't be was recreated
+  // unpromoted at every load).
+  bool CanPromoteToResolveDest(const TextureKey& key) const;
   // Whether the texture can be served from its resolve instead of uploaded.
   bool TryServeFromResolveDest(const VulkanTexture& texture, bool load_base,
                                bool load_mips) const;
@@ -617,6 +651,11 @@ class VulkanTextureCache final : public TextureCache {
     Usage usage_ = Usage::kUndefined;
 
     std::unordered_map<ViewKey, VkImageView, ViewKey::Hasher> views_;
+    // GetView's memo (texture_lookup_memo): the arguments of the last call
+    // that returned a view, and the view - most textures are always sampled
+    // the same way.
+    VkImageView last_view_ = VK_NULL_HANDLE;
+    uint32_t last_view_arguments_ = 0;
 
     // For 3D textures sampled as 2D - cached 2D texture loaded from slice 0.
     // Uses a modified key (depth=1) with 3D tiling to read from guest memory.
