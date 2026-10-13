@@ -87,12 +87,14 @@ void GraphicsUploadBufferPool::FlushWrites() {
 
 GraphicsUploadBufferPool::Page* GraphicsUploadBufferPool::Request(
     uint64_t submission_index, size_t size, size_t alignment,
-    size_t& offset_out) {
+    size_t& offset_out, size_t reserve) {
   alignment = std::max(alignment, size_t(1));
   assert_true(xe::is_pow2(alignment));
   size = xe::align(size, alignment);
-  assert_true(size <= page_size_);
-  if (size > page_size_) {
+  // The bytes from the offset that must be in the page.
+  const size_t span = std::max(size, reserve);
+  assert_true(span <= page_size_);
+  if (span > page_size_) {
     return nullptr;
   }
   assert_true(!current_page_used_ ||
@@ -105,7 +107,7 @@ GraphicsUploadBufferPool::Page* GraphicsUploadBufferPool::Request(
   // it writes past the end of its mapping into whatever follows.
   const size_t current_capacity =
       writable_first_ ? writable_first_->capacity_ : page_size_;
-  if (current_page_used_aligned + size > current_capacity || !writable_first_) {
+  if (current_page_used_aligned + span > current_capacity || !writable_first_) {
     // Start a new page if can't fit all the bytes or don't have an open page.
     if (writable_first_) {
       // Close the page that was current.
@@ -141,7 +143,7 @@ GraphicsUploadBufferPool::Page* GraphicsUploadBufferPool::Request(
     current_page_used_aligned = 0;
     current_page_flushed_ = 0;
   }
-  if (size > writable_first_->capacity_) {
+  if (span > writable_first_->capacity_) {
     // A recycled page predating a page_size_ growth cannot hold this request.
     return nullptr;
   }

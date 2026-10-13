@@ -112,6 +112,18 @@ DEFINE_bool(
     "Vulkan");
 
 DEFINE_bool(
+    vulkan_float_constants_full_range, true,
+    "With dynamic constant buffers, give the descriptors of the float "
+    "constants the range of all 256 (4 KB, what dynamically indexed constants "
+    "use already) and keep that much of the upload page after their offset, "
+    "rather than the range of the constants the shader reads: the descriptor "
+    "set then stays the same when the next shader reads a different number "
+    "of them, and only its dynamic offsets change. Shaders read only their "
+    "own constants, so the results are identical. Read per draw "
+    "(debug.xendroid.const_full_range on Android).",
+    "Vulkan");
+
+DEFINE_bool(
     readback_resolve_uma_unread_traffic, false,
     "Diagnostics: when readback_resolve_uma_read_watch skips the copy of a "
     "resolve the CPU hasn't read, still read its bytes out of the GPU's "
@@ -345,6 +357,15 @@ DEFINE_bool(
     "(the guest constant-buffer count).",
     "Vulkan");
 
+DEFINE_bool(
+    vulkan_dynamic_constant_buffers_turnip, true,
+    "vulkan_dynamic_constant_buffers on the Mesa Turnip driver, which reads "
+    "dynamic uniform buffers correctly (the proprietary Qualcomm drivers the "
+    "option stays off for don't). Red Dead Redemption otherwise writes a "
+    "constants descriptor set for nearly every draw (7260 a frame). Read at "
+    "startup.",
+    "Vulkan");
+
 DEFINE_int32(
     vulkan_debug_extra_pass_breaks, 0,
     "Diagnostics - measures what a render pass break costs the GPU: end the "
@@ -512,6 +533,9 @@ void PollDebugPropertyOverrides(CommandProcessor& command_processor) {
   PollDebugPropertyOverride("debug.xendroid.texset_reuse",
                             "vulkan_texture_descriptor_set_frame_reuse",
                             cvars::vulkan_texture_descriptor_set_frame_reuse);
+  PollDebugPropertyOverride("debug.xendroid.const_full_range",
+                            "vulkan_float_constants_full_range",
+                            cvars::vulkan_float_constants_full_range);
   PollDebugPropertyOverride("debug.xendroid.uma_traffic",
                             "readback_resolve_uma_unread_traffic",
                             cvars::readback_resolve_uma_unread_traffic);
@@ -1036,9 +1060,13 @@ bool VulkanCommandProcessor::SetupContext() {
   // all conformant hardware; if it ever fails, the binding stays plain
   // UNIFORM_BUFFER and the original per-draw write+bind path runs unchanged.
   use_dynamic_constants_ =
-      cvars::vulkan_dynamic_constant_buffers &&
+      (cvars::vulkan_dynamic_constant_buffers ||
+       (cvars::vulkan_dynamic_constant_buffers_turnip &&
+        device_properties.driverID == VK_DRIVER_ID_MESA_TURNIP)) &&
       device_properties.maxDescriptorSetUniformBuffersDynamic >=
           SpirvShaderTranslator::kConstantBufferCount;
+  XELOGI("Vulkan: constant buffers bound as {} uniform buffers",
+         use_dynamic_constants_ ? "dynamic" : "plain");
   const VkDescriptorType constants_descriptor_type =
       use_dynamic_constants_ ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
                              : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -10802,6 +10830,11 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
         ~(UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetConstants);
     size_t uniform_buffer_alignment =
         size_t(vulkan_device->properties().minUniformBufferOffsetAlignment);
+    // vulkan_float_constants_full_range: all 256 float constants, what the
+    // interpreter and dynamically indexed constants use.
+    constexpr size_t kFloatConstantsFullRange = sizeof(float) * 4 * 256;
+    const bool float_constants_full_range =
+        use_dynamic_constants_ && cvars::vulkan_float_constants_full_range;
     // System constants.
     if (!(current_constant_buffers_up_to_date_ &
           (UINT32_C(1) << SpirvShaderTranslator::kConstantBufferSystem))) {
@@ -10836,13 +10869,16 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
               ? sizeof(float) * 4 * 256
               : sizeof(float) * 4 *
                     std::max(float_constant_count_vertex, UINT32_C(1));
+      const size_t float_constants_range =
+          float_constants_full_range ? kFloatConstantsFullRange
+                                     : float_constants_size;
       uint8_t* mapping = uniform_buffer_pool_->Request(
           frame_current_, float_constants_size, uniform_buffer_alignment,
-          buffer_info.buffer, buffer_info.offset);
+          buffer_info.buffer, buffer_info.offset, float_constants_range);
       if (!mapping) {
         return false;
       }
-      buffer_info.range = VkDeviceSize(float_constants_size);
+      buffer_info.range = VkDeviceSize(float_constants_range);
       if (interpreter_placeholder) {
         std::memcpy(mapping, &regs[XE_GPU_REG_SHADER_CONSTANT_000_X],
                     sizeof(float) * 4 * 256);
@@ -10872,13 +10908,16 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
           [SpirvShaderTranslator::kConstantBufferFloatPixel];
       size_t float_constants_size =
           sizeof(float) * 4 * std::max(float_constant_count_pixel, UINT32_C(1));
+      const size_t float_constants_range =
+          float_constants_full_range ? kFloatConstantsFullRange
+                                     : float_constants_size;
       uint8_t* mapping = uniform_buffer_pool_->Request(
           frame_current_, float_constants_size, uniform_buffer_alignment,
-          buffer_info.buffer, buffer_info.offset);
+          buffer_info.buffer, buffer_info.offset, float_constants_range);
       if (!mapping) {
         return false;
       }
-      buffer_info.range = VkDeviceSize(float_constants_size);
+      buffer_info.range = VkDeviceSize(float_constants_range);
       for (uint32_t i = 0; i < 4; ++i) {
         uint64_t float_constant_map_entry =
             current_float_constant_map_pixel_[i];
