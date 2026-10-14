@@ -42,16 +42,30 @@ aparelhos reais.
 
 ### Desempenho, medido no aparelho
 - **Ajustes por jogo** aplicados quando o título inicia, nos jogos que precisam deles:
-  Forza Horizon, Forza Horizon 2, Gears of War 3, Need for Speed: Most Wanted e outros.
+  Forza Horizon, Forza Horizon 2, Gears of War 3, Crysis 3, Need for Speed: Most
+  Wanted, Rise of the Tomb Raider e outros.
 - **Menos transferências de EDRAM** na GPU: transferências que um draw sobrescreve são
   puladas e, nos jogos que permitem, a profundidade desenhada em 4× MSAA vai direto para
   a superfície 1× e as faixas do tiling predicado são desenhadas uma vez só.
 - **Atalhos exatos nos shaders** (decodificação do sinal das texturas, arredondamento de
   21 bits), cargas de textura direto nas imagens, resolves diretos no host e o
   compilador de shaders do Turnip configurado para muitos draws pequenos.
+- **Thread de comandos mais leve**: resolves copiados de volta para a memória do jogo
+  só quando o jogo os lê, comandos enviados em lotes pequenos quando a GPU fica sem
+  trabalho e, no Turnip, constant buffers com offsets dinâmicos e descriptor sets de
+  textura reaproveitados.
 - **Trabalho no JIT ARM64**: tratamento de NaN exato e barato, reservas do guest
   protegidas contra ABA e denormais do VMX zerados como no console.
 - **Compilação de shaders assíncrona** com cache de pipelines persistente.
+
+### Precisão e estabilidade
+- **Correções de renderização** achadas com dumps de quadro e conferidas no aparelho: a
+  iluminação e as texturas do Crysis 3, o menu principal e a primeira fase do Rise of
+  the Tomb Raider e as cores do Gears of War 3.
+- **A imagem não congela mais** depois de minutos de jogo no Android (apresentação
+  FIFO).
+- **Falhas no áudio** somem e voltam suavemente em vez de estalar, no AAudio e no
+  OpenSL ES.
 
 ### Ferramentas
 - **HUD de desempenho** (FPS, tempo de quadro, CPU, GPU, RAM, temperaturas) e limite de
@@ -60,8 +74,9 @@ aparelhos reais.
 - **Gerenciador de drivers** Adreno/Turnip, global ou por jogo, com verificação SHA-256.
 - **Histórico de jogo** com percentis do tempo de quadro, pacote de diagnóstico para
   compartilhar, notas de compatibilidade locais e perfis de ajustes da comunidade.
-- **Geração de quadros** (experimental, desligada por padrão): Win-FG 2× e LSFG com o
-  seu próprio `Lossless.dll`.
+- **Geração de quadros** (experimental, desligada por padrão): Win-FG e LSFG (com o seu
+  próprio `Lossless.dll`) transformam um jogo a 30 fps em 60 na tela, e o HUD mostra
+  as duas taxas.
 
 ## Desempenho
 
@@ -73,12 +88,13 @@ estes números.
 |---|---|---|---|
 | Forza Horizon | Corrida | 30 fps (limite do jogo) | ~18 ms de GPU por quadro |
 | Forza Horizon 2 | Corrida | 27–30 fps | Com os ajustes do Forza Horizon |
-| Gears of War 3 | Campanha, Versus | 30 fps (limite do jogo) | GPU de 40 → 28 ms por quadro na cena mais pesada |
+| Gears of War 3 | Campanha, Versus | 30 fps (limite do jogo) | GPU de 40 → 28 ms por quadro na cena mais pesada; cores lavadas corrigidas |
+| Crysis 3 | Primeiro checkpoint | 30 fps (limite do jogo) | Eram ~22 fps; iluminação e texturas corrigidas |
 | Halo 4 | Campanha | ~26–30 fps | Cutscenes em vídeo corrigidas; resta um leve tremor de sombra |
-| Need for Speed: Most Wanted | Corrida | ~19 fps | Travamentos na abertura e na gameplay corrigidos |
+| Need for Speed: Most Wanted | Corrida | ~21 fps | Sem forçar o clock da GPU (eram ~12 fps); travamentos na abertura e na gameplay corrigidos |
+| Rise of the Tomb Raider | Menu principal, primeira fase | ~20 fps | Agora renderiza: o menu era uma tela azul chapada |
 | Sonic Unleashed | Gameplay | 50–52 fps | |
 | Halo: Reach | Menus, abertura | 30 fps | Cai a 19 fps |
-| Crysis 3 | Menus, abertura | 32–46 fps | Travamento do JIT corrigido |
 | Grand Theft Auto IV | Menus, abertura | ~22 fps | Limitado pela thread de comandos da GPU |
 | Red Dead Redemption | Menus, abertura | ~25 fps | Limitado pela thread de comandos da GPU |
 
