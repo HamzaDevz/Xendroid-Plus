@@ -76,6 +76,7 @@ DECLARE_bool(texture_partial_reload);
 DECLARE_bool(texture_integer_num_format);
 DECLARE_bool(vulkan_direct_host_resolve);
 DECLARE_bool(vulkan_async_skip_draws);
+DECLARE_bool(vulkan_depth_clamp_without_depth);
 DECLARE_bool(merge_tiling_bands);
 DECLARE_bool(merge_tiling_bands_call_sites);
 DECLARE_bool(merge_tiling_bands_log);
@@ -284,6 +285,18 @@ DEFINE_bool(
     "every title since 2026-10-07.",
     "GPU");
 UPDATE_from_bool(memexport_readback_deferred, 2026, 10, 7, 11, false);
+
+DEFINE_bool(
+    vulkan_pixel_shader_vertex_buffers, true,
+    "Upload the buffers pixel shaders read with vertex fetch before the draw, "
+    "like the vertex shader's. The Xenos fetches vertices in either stage: "
+    "Rise of the Tomb Raider's pixel shaders that sum the morph targets of "
+    "Lara's clothes read their deltas so, and with only the vertex shader's "
+    "buffers uploaded they read zeros (her clothes stretched into a plank). "
+    "Off is the old behavior, for comparison. "
+    "debug.xendroid.ps_vertex_buffers switches it at run time on Android "
+    "(read per draw; a buffer uploaded stays until the CPU writes it).",
+    "Vulkan");
 
 DEFINE_bool(
     vulkan_cache_texture_descriptors, true,
@@ -584,6 +597,14 @@ void PollDebugPropertyOverrides(CommandProcessor& command_processor) {
   PollDebugPropertyOverride("debug.xendroid.a2c_as_test",
                             "alpha_to_coverage_as_alpha_test",
                             cvars::alpha_to_coverage_as_alpha_test);
+  // Read per draw (pipeline descriptions): new pipelines on the fly.
+  PollDebugPropertyOverride("debug.xendroid.depth_clamp_no_depth",
+                            "vulkan_depth_clamp_without_depth",
+                            cvars::vulkan_depth_clamp_without_depth);
+  // Read per draw.
+  PollDebugPropertyOverride("debug.xendroid.ps_vertex_buffers",
+                            "vulkan_pixel_shader_vertex_buffers",
+                            cvars::vulkan_pixel_shader_vertex_buffers);
   // Read per draw, like msaa_4x_as_2x.
   PollDebugPropertyOverride("debug.xendroid.depth_4x_as_1x",
                             "vulkan_depth_4x_as_1x",
@@ -3244,9 +3265,15 @@ void VulkanCommandProcessor::PollFrameDump() {
             uint32_t(shared_memory_->IsRangeGpuWritten(base, length)),
             differing, range.second.dword_0, range.second.dword_1,
             range.second.dword_2);
+        if (range.second.is_3d) {
+          line += " 3d";
+        }
         if (differing) {
           line += fmt::format(" first +{:X}", first);
-          // Both copies of the first differing ones, to tell which is right.
+        }
+        // Both copies of the first differing ones, to tell which is right, and
+        // of the 3D ones (their slices are made by resolves to slices).
+        if (differing || range.second.is_3d) {
           if (differing_written < 48) {
             ++differing_written;
             for (int copy = 0; copy < 2; ++copy) {
@@ -3290,8 +3317,9 @@ void VulkanCommandProcessor::PollFrameDump() {
             uint32_t(shared_memory_->IsRangeGpuWritten(base, length)),
             differing);
         std::fwrite(line.data(), 1, line.size(), frame_dump_file_);
-        // Both copies of the first differing buffers, to tell which is right.
-        if (differing && buffers_written < 32) {
+        // Both copies of the first differing buffers, to tell which is right,
+        // and of small ones (a few vertices).
+        if ((differing || length <= 256) && buffers_written < 64) {
           ++buffers_written;
           for (int copy = 0; copy < 2; ++copy) {
             FILE* file = xe::filesystem::OpenFile(
@@ -3450,6 +3478,67 @@ void VulkanCommandProcessor::DumpFrameDraw(
     line += fmt::format(" vf{}:{:08X}:{:08X}:{}", binding.fetch_constant,
                         fetch.dword_0, fetch.dword_1, binding.stride_words);
     record_buffer(uint32_t(fetch.address) << 2, uint32_t(fetch.size) << 2);
+    // The words of a small buffer (a few vertices) as the guest memory holds
+    // them when the draw is issued.
+    if (fetch.size && fetch.size <= 64) {
+      const uint32_t* words = reinterpret_cast<const uint32_t*>(
+          memory_->TranslatePhysical(uint32_t(fetch.address) << 2));
+      line += fmt::format(" vd{}=", binding.fetch_constant);
+      for (uint32_t i = 0; i < fetch.size; ++i) {
+        line += fmt::format("{}{:08X}", i ? "," : "", words[i]);
+      }
+    }
+  }
+  // The buffers the pixel shader fetches vertices from.
+  if (pixel_shader) {
+    for (const Shader::VertexBinding& binding :
+         pixel_shader->vertex_bindings()) {
+      const xenos::xe_gpu_vertex_fetch_t fetch =
+          regs.GetVertexFetch(binding.fetch_constant);
+      line += fmt::format(" pvf{}:{:08X}:{:08X}:{}", binding.fetch_constant,
+                          fetch.dword_0, fetch.dword_1, binding.stride_words);
+      record_buffer(uint32_t(fetch.address) << 2, uint32_t(fetch.size) << 2);
+    }
+  }
+  // The bool constants (VS 0...127 then PS 128...255) and the loop
+  // constants the shaders branch on.
+  line += " bool";
+  for (uint32_t i = 0; i < 8; ++i) {
+    line += fmt::format(
+        "{}{:08X}", i ? "," : " ",
+        regs.values[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031 + i]);
+  }
+  line += " loop";
+  for (uint32_t i = 0; i < 32; ++i) {
+    line += fmt::format("{}{:X}", i ? "," : " ",
+                        regs.values[XE_GPU_REG_SHADER_CONSTANT_LOOP_00 + i]);
+  }
+  // Clipping and the viewport transform.
+  line += fmt::format(
+      " clip {:08X} vte {:08X} vport {:g},{:g},{:g},{:g},{:g},{:g}",
+      regs.values[XE_GPU_REG_PA_CL_CLIP_CNTL],
+      regs.values[XE_GPU_REG_PA_CL_VTE_CNTL],
+      regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XSCALE),
+      regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XOFFSET),
+      regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YSCALE),
+      regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YOFFSET),
+      regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_ZSCALE),
+      regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_ZOFFSET));
+  // The float constants the vertex shader reads (c0...c255).
+  {
+    const Shader::ConstantRegisterMap& constants =
+        vertex_shader.constant_register_map();
+    for (uint32_t i = 0; i < 256; ++i) {
+      if (!(constants.float_bitmap[i >> 6] & (uint64_t(1) << (i & 63)))) {
+        continue;
+      }
+      float components[4];
+      std::memcpy(components,
+                  &regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X + i * 4],
+                  sizeof(components));
+      line += fmt::format(" vc{}={:g},{:g},{:g},{:g}", i, components[0],
+                          components[1], components[2], components[3]);
+    }
   }
   if (index_buffer_info && index_buffer_info->guest_base) {
     line += fmt::format(" ib:{:08X}:{}:{}:{}", index_buffer_info->guest_base,
@@ -3539,8 +3628,40 @@ void VulkanCommandProcessor::DumpFrameDraw(
         if (base && length && base + length <= (UINT64_C(1) << 29)) {
           FrameDumpTexture& recorded = frame_dump_textures_.try_emplace(
               base, FrameDumpTexture{0, fetch.dword_0, fetch.dword_1,
-                                     fetch.dword_2}).first->second;
+                                     fetch.dword_2, false}).first->second;
           recorded.length = std::max(recorded.length, uint32_t(length));
+        }
+      } else if (fetch.dimension == xenos::DataDimension::k3D &&
+                 format_info && format_info->bits_per_pixel) {
+        // The base level of a 3D texture, all its slices: 32x32x4 tiles when
+        // tiled.
+        uint32_t width_blocks =
+            xe::align(uint32_t(fetch.size_3d.width) + 1,
+                      format_info->block_width) /
+            format_info->block_width;
+        uint32_t height_blocks =
+            xe::align(uint32_t(fetch.size_3d.height) + 1,
+                      format_info->block_height) /
+            format_info->block_height;
+        uint32_t depth = uint32_t(fetch.size_3d.depth) + 1;
+        if (fetch.tiled) {
+          width_blocks = xe::align(width_blocks, UINT32_C(32));
+          height_blocks = xe::align(height_blocks, UINT32_C(32));
+          depth = xe::align(depth, UINT32_C(4));
+        } else {
+          width_blocks = xe::align(
+              width_blocks * format_info->bytes_per_block(), UINT32_C(256)) /
+              format_info->bytes_per_block();
+        }
+        const uint32_t base = fetch.base_address << 12;
+        const uint64_t length = uint64_t(width_blocks) * height_blocks *
+                                depth * format_info->bytes_per_block();
+        if (base && length && base + length <= (UINT64_C(1) << 29)) {
+          FrameDumpTexture& recorded = frame_dump_textures_.try_emplace(
+              base, FrameDumpTexture{0, fetch.dword_0, fetch.dword_1,
+                                     fetch.dword_2, true}).first->second;
+          recorded.length = std::max(recorded.length, uint32_t(length));
+          recorded.is_3d = true;
         }
       }
     }
@@ -7014,6 +7135,31 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
         vfetch_sizes[vfetch_current_queued++] = vfetch_constant.size;
       }
     }
+    // The pixel shader may fetch vertices too
+    // (vulkan_pixel_shader_vertex_buffers): its own fetch constants follow the
+    // vertex shader's. Draws were never dropped over them, so an invalid one
+    // or a failed request is skipped.
+    const uint32_t vfetch_vertex_queued = vfetch_current_queued;
+    if (pixel_shader && cvars::vulkan_pixel_shader_vertex_buffers) {
+      const Shader::ConstantRegisterMap& constant_map_pixel =
+          pixel_shader->constant_register_map();
+      for (uint32_t i = 0;
+           i < xe::countof(constant_map_pixel.vertex_fetch_bitmap); ++i) {
+        uint32_t vfetch_bits_remaining =
+            constant_map_pixel.vertex_fetch_bitmap[i] &
+            ~constant_map_vertex.vertex_fetch_bitmap[i];
+        uint32_t j;
+        while (xe::bit_scan_forward(vfetch_bits_remaining, &j)) {
+          vfetch_bits_remaining = xe::clear_lowest_bit(vfetch_bits_remaining);
+          xenos::xe_gpu_vertex_fetch_t vfetch_constant =
+              regs.GetVertexFetch(i * 32 + j);
+          if (vfetch_constant.type == xenos::FetchConstantType::kVertex) {
+            vfetch_addresses[vfetch_current_queued] = vfetch_constant.address;
+            vfetch_sizes[vfetch_current_queued++] = vfetch_constant.size;
+          }
+        }
+      }
+    }
 
     if (vfetch_current_queued) {
       PassEndReasonScope pass_end_reason_scope(*this,
@@ -7027,7 +7173,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
 
       for (uint32_t i = 0; i < vfetch_current_queued; ++i) {
         if (!shared_memory_->RequestRange(vfetch_addresses[i] << 2,
-                                          vfetch_sizes[i] << 2)) {
+                                          vfetch_sizes[i] << 2) &&
+            i < vfetch_vertex_queued) {
           XELOGE(
               "Failed to request vertex buffer at 0x{:08X} (size {}) in the "
               "shared memory",
