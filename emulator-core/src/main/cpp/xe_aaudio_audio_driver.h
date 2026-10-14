@@ -47,6 +47,7 @@ class AAudioAudioDriver : public AudioDriver {
     void Resume() override;
     void SetVolume(float volume) override;
   size_t GetQueuedFrameCount() override;
+  bool ReportsQueuedFrameCount() const override { return true; }
   void SubmitFrame(float* frame) override;
   void Shutdown() override;
 
@@ -127,6 +128,8 @@ class AAudioAudioDriver : public AudioDriver {
   std::atomic<uint64_t> stat_gaps_{0};
   std::atomic<uint64_t> stat_queue_depth_sum_{0};
   std::atomic<uint32_t> stat_queue_depth_max_{0};
+  // The shallowest the queue got: how much of it a stall of the producer used.
+  std::atomic<uint32_t> stat_queue_depth_min_{UINT32_MAX};
   // A block size we did not ask for silently changes the drain rate.
   std::atomic<int32_t> stat_unexpected_frames_{0};
   // Samples the downmix pushed past full scale.

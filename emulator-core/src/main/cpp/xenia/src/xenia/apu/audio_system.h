@@ -106,6 +106,12 @@ class AudioSystem {
     std::atomic<uint32_t> frames_submitted{0};
     std::atomic<uint32_t> frames_processed{0};
     std::atomic<uint32_t> frames_dropped{0};
+    // apu_aaudio_log_stats: blocks the guest submitted all zero, and those
+    // after a block with sound - its own mix running dry, which no host queue
+    // depth hides.
+    std::atomic<uint32_t> frames_silent{0};
+    std::atomic<uint32_t> silences_after_sound{0};
+    bool last_frame_silent = true;
     // Held by worker during Execute; UnregisterClient waits on it.
     std::mutex callback_mutex;
   };

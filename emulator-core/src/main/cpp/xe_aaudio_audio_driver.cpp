@@ -312,6 +312,9 @@ const float* AAudioAudioDriver::NextGuestBlock() {
   if (depth > stat_queue_depth_max_.load(std::memory_order_relaxed)) {
     stat_queue_depth_max_.store(depth, std::memory_order_relaxed);
   }
+  if (depth < stat_queue_depth_min_.load(std::memory_order_relaxed)) {
+    stat_queue_depth_min_.store(depth, std::memory_order_relaxed);
+  }
   // Before the guest's first block the device only plays startup silence: not
   // an underrun anyone hears, so the run summary starts counting after it.
   if (played_once_) {
@@ -346,6 +349,8 @@ void AAudioAudioDriver::LogAndResetStats() {
       stat_queue_depth_sum_.exchange(0, std::memory_order_relaxed);
   const uint32_t depth_max =
       stat_queue_depth_max_.exchange(0, std::memory_order_relaxed);
+  const uint32_t depth_min =
+      stat_queue_depth_min_.exchange(UINT32_MAX, std::memory_order_relaxed);
   const int32_t odd_frames =
       stat_unexpected_frames_.exchange(0, std::memory_order_relaxed);
   const uint64_t clipped = stat_clipped_.exchange(0, std::memory_order_relaxed);
@@ -364,10 +369,11 @@ void AAudioAudioDriver::LogAndResetStats() {
   }
 
   XELOGI(
-      "AAudio: {} cb, {} gaps ({:.1f}%), queue avg {:.2f} max {}, rate {:.3f}, "
-      "xruns {}, clipped {} ({:.3f}%), callback {:.0f} us avg {} max{}",
+      "AAudio: {} cb, {} gaps ({:.1f}%), queue avg {:.2f} max {} min {}, rate "
+      "{:.3f}, xruns {}, clipped {} ({:.3f}%), callback {:.0f} us avg {} max{}",
       callbacks, gaps, 100.0 * double(gaps) / double(callbacks),
       double(depth_sum) / double(callbacks), depth_max,
+      depth_min == UINT32_MAX ? 0 : depth_min,
       stat_rate_milli_.load(std::memory_order_relaxed) / 1000.0, xruns,
       clipped,
       played ? 100.0 * double(clipped) / double(played) : 0.0,

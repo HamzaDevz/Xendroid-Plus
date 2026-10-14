@@ -35,7 +35,7 @@ Backends: **AAudio** (padrão, `apu = "aaudio"`) e **OpenSL ES** (`apu = "opensl
 | Buffer | Tamanho | Dono / threads |
 |---|---|---|
 | Créditos por cliente (semáforo) | `apu_max_queued_frames` = 8 blocos (42,7 ms) | Audio Worker consome; callback do dispositivo devolve |
-| Fila do driver | até ~8 blocos, pool reaproveitado | produtor: Audio Worker; consumidor: callback (mutex curto) |
+| Fila do driver | 4 a 5 blocos; até 7 depois de travamentos (`apu_adaptive_queue`); pool reaproveitado | produtor: Audio Worker; consumidor: callback (mutex curto) |
 | Bloco em reprodução (`AudioBlockRenderer`) | 1 bloco estéreo | só o callback |
 | Buffer do dispositivo, AAudio | `apu_aaudio_buffer_bursts` = 4 bursts (adaptativo opcional) | AAudio |
 | Buffers de saída, OpenSL ES | 2 por driver, na fila do OpenSL | thread do player |
@@ -45,7 +45,9 @@ Backends: **AAudio** (padrão, `apu = "aaudio"`) e **OpenSL ES** (`apu = "opensl
 - **Quem manda é o relógio do dispositivo de áudio.** Cada bloco que ele consome devolve um
   crédito; o Audio Worker só chama o jogo com crédito, no ritmo de 5,333 ms do relógio
   `steady_clock` (dividido por `guest_time_scalar`), e repõe até em dobro quando a fila cai
-  abaixo da metade (`apu_pump_topup`). O tempo de áudio do jogo anda no ritmo do dispositivo.
+  abaixo da metade dos créditos (`apu_pump_topup`), ou da profundidade maior que a fila
+  adaptativa pediu depois de um travamento (abaixo). O tempo de áudio do jogo anda no ritmo do
+  dispositivo.
 - **O vídeo anda no relógio do guest** (vblank de 60 Hz sobre o `steady_clock`). A diferença
   entre os dois cristais (partes por milhão) não acumula: a fila absorve e os créditos regulam.
 - **Jogo abaixo do tempo real** (CPU): a fila esvazia. Abaixo de 3 blocos, o AAudio reamostra
@@ -120,12 +122,84 @@ Confirmados no código; os números são de medição.
    dos callbacks (média e máxima, em µs), além de falhas, profundidade da fila, taxa, xruns e
    clipping.
 
+## Áudio sob carga
+
+A queixa: o áudio falha nas quedas de FPS, nas batidas e nas cenas pesadas. Medido no Forza
+Horizon, dirigindo reto com o acelerador preso (o carro bate no que estiver à frente), com
+`apu_aaudio_log_stats`.
+
+- **As falhas vêm de travamentos do Audio Worker, não do jogo.** Em 22 min medidos, o jogo
+  entregou um só bloco zerado no meio do som. As falhas vêm logo depois de o Worker chegar
+  atrasado ou de o callback do jogo demorar 20 ms ou mais, e esses travamentos vêm em
+  sequência, nas cenas pesadas. Com a fila de sempre, 4 a 5 blocos (21 a 27 ms), houve 17
+  falhas em 162 s.
+- **O Worker espera por um núcleo.** O callback do jogo gasta ~150 µs de CPU, mas nas quedas
+  de FPS leva até 38 ms. O resto é espera, quase toda com a thread pronta e sem núcleo: 146 a
+  254 ms por segundo nas quedas de FPS, e até 431 ms por segundo e 45 ms num só callback com
+  carga extra.
+  - **O escalonador:** no Snapdragon 8s Gen 4, o WALT da Qualcomm trata as threads mais
+    pesadas do emulador (Guest CPU, GPU Commands) como "pipeline" (MVP). Elas passam na frente
+    de qualquer `nice`: o Worker já roda com −12, e −20 não mudou nada. Os ajustes do WALT só
+    valem com root.
+  - **Fora do callback:** uma vez, o Worker ficou 62 ms parado, provavelmente na trava global
+    de seções críticas.
+- **Fila fixa mais funda não resolve:** com 6 blocos fixos, um callback de 38,6 ms ainda deu 6
+  falhas, e a latência fica maior o tempo todo.
+- **A correção: fila adaptativa** (`apu_adaptive_queue`, ligada por padrão).
+  - **Quando cresce:** depois de um travamento que gastou metade do que a fila cobre (o Worker
+    atrasado ou o callback lento), ou ao achar a fila com no máximo 1 bloco. Só contam as
+    chamadas em que o jogo entregou um bloco: a reposição só vem depois delas, e um jogo sem
+    nada a entregar esvazia a fila sem travamento nenhum.
+  - **Quanto:** o *topup* passa a encher 2 blocos a mais, no máximo uma vez a cada 500 ms, até
+    `apu_max_queued_frames` − 1 (7 blocos, 37 ms, com os 8 créditos padrão).
+  - **Quando volta:** depois de 20 s sem travamento, desce 1 bloco. A latência extra só vem
+    depois de travamentos.
+  - **O que não conta:** o início de um cliente e a volta de uma pausa. Cada cliente tem seu
+    próprio estado, que recomeça nesses dois momentos. Até chegar à profundidade de sempre, a
+    fila ainda está enchendo, e a pausa não conta como atraso.
+  - **Profundidade de sempre:** `apu_queue_target` a muda, de 4 a `apu_max_queued_frames` − 1
+    (0 = metade dos créditos, no mínimo 4). Abaixo de 4, a fila ficaria onde o AAudio já
+    baixa o tom.
+
+  Medido com dois laços de CPU a mais rodando no aparelho, para tornar as quedas de FPS mais
+  fortes; metade do percurso sem a fila adaptativa e metade com:
+
+  | Pior travamento do segundo | Sem a fila adaptativa | Com |
+  |---|---|---|
+  | 20 a 40 ms | 3 de 6 segundos com falha | 0 de 9 |
+  | 50 ms ou mais | (nenhum) | 3 de 3, 42 falhas |
+
+  Uma primeira versão, que só crescia ao achar a fila quase vazia, deu 2 falhas sem e 0 com, sem
+  carga extra.
+- **O que fica: travamentos de 50 ms ou mais.** No pior caso, o Worker passou 25 a 43% de cada
+  segundo esperando núcleo, por 3 s seguidos, e entregou 168 a 177 blocos por segundo, contra
+  187,5 do tempo real; nenhuma fila dentro dos 8 créditos cobre isso.
+  - **Mais créditos** (`apu_max_queued_frames`, que o app deixa mudar) dão mais espaço à fila
+    adaptativa. Sozinhos, também aprofundam a fila de sempre, que é metade dos créditos; com
+    `apu_queue_target` = 4, ela fica em 4 blocos. Não medido.
+  - **Não testado:** afinidade de CPU do Worker longe das threads de pipeline, e menos idas
+    dele à trava global.
+- **Diagnóstico novo** (`apu_aaudio_log_stats`), a cada segundo:
+  - `AudioWorker: N pumps (...)`: chamadas ao jogo, as sem bloco, os *top-ups* e os prazos
+    sem crédito; blocos entregues; duração do callback (média e máxima); o maior atraso; e
+    blocos zerados do jogo (e quantos logo depois de som);
+  - `AudioWorker: guest callback CPU time ...`: CPU do callback (média e no mais lento) e o
+    núcleo de cada chamada;
+  - `AudioWorker: waiting for a core ...`: espera por núcleo no callback mais lento, a maior
+    num callback e o total do segundo (de `/proc/thread-self/schedstat`);
+  - na linha `AAudio:`, a profundidade mínima da fila (`min`).
+
+  A cada crescimento sai `AudioWorker: a N us stall with M blocks queued, refilling to K
+  blocks`. Com o jogo rodando, `debug.xendroid.apu_adaptive_queue` e
+  `debug.xendroid.apu_queue_target` mudam as duas opções.
+
 ## Hipóteses e o que fica
 
 - **Taxa dinâmica até 0,90×.** É reamostragem adaptativa com mudança de tom audível perto do
   limite. Só entra com a fila quase vazia (jogo abaixo do tempo real). Em todos os segundos
-  medidos (Gears of War 3, abertura) ela ficou em 1,000; falta medir num jogo pesado de CPU antes
-  de mexer no limite.
+  medidos (Gears of War 3, abertura) ela ficou em 1,000; no Forza Horizon sob carga também, mas o
+  log só mostra a taxa no instante de cada linha, não o mínimo do segundo. Falta isso antes de
+  mexer no limite.
 - **Mutex no callback.** Seções críticas de poucas instruções (contar a fila, retirar e devolver
   um ponteiro, liberar o crédito). Medido em 609 segundos: média de 7 a 32 µs por callback; a
   máxima de cada segundo tem mediana de ~200 µs, fica abaixo de 0,65 ms em 95% deles e chegou
@@ -179,3 +253,5 @@ Confirmados no código; os números são de medição.
     novo a falha aparece como uma saída suave, ~33 ms de silêncio e uma entrada em rampa, com o
     maior passo em 1,0× o da música; no antigo a música estava baixa demais na troca para
     comparar (repetições decaindo, maior passo 0,4×).
+- **Sob carga** (Forza Horizon, com e sem a fila adaptativa no mesmo percurso, trocada com o
+  jogo rodando): os números estão em [Áudio sob carga](#áudio-sob-carga).
