@@ -702,6 +702,10 @@ int XSocket::Recv(uint8_t* buf, uint32_t buf_len, uint32_t flags) {
     });
   }
 
+  // A stream peer that closed the connection reads as 0 bytes.
+  if (ec == asio::error::eof) {
+    return 0;
+  }
   if (ec) {
     last_error_ = AsioErrorToWSAError(ec);
     return -1;
@@ -743,6 +747,10 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags,
     });
   }
 
+  // A stream peer that closed the connection reads as 0 bytes.
+  if (ec == asio::error::eof) {
+    return 0;
+  }
   if (ec) {
     last_error_ = AsioErrorToWSAError(ec);
     return -1;
