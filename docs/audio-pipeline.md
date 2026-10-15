@@ -162,18 +162,25 @@ Horizon, dirigindo reto com o acelerador preso (o carro bate no que estiver à f
     baixa o tom.
 
   Medido com dois laços de CPU a mais rodando no aparelho, para tornar as quedas de FPS mais
-  fortes; metade do percurso sem a fila adaptativa e metade com:
+  fortes. Na build final, o mesmo percurso teve a primeira metade com a fila adaptativa e a
+  segunda sem (433 s). Um segundo conta como com falha quando a linha `AAudio:` dele ou a
+  seguinte tem falha:
 
   | Pior travamento do segundo | Sem a fila adaptativa | Com |
   |---|---|---|
-  | 20 a 40 ms | 3 de 6 segundos com falha | 0 de 9 |
-  | 50 ms ou mais | (nenhum) | 3 de 3, 42 falhas |
+  | menos de 20 ms | 5 de 195 segundos com falha | 0 de 202 |
+  | 20 a 40 ms | 12 de 14 | 1 de 13, logo antes de uma sequência acima de 40 ms |
+  | 40 a 50 ms | 1 de 1 | 4 de 4 |
+  | 50 ms ou mais | (nenhum) | 4 de 4 |
 
-  Uma primeira versão, que só crescia ao achar a fila quase vazia, deu 2 falhas sem e 0 com, sem
-  carga extra.
-- **O que fica: travamentos de 50 ms ou mais.** No pior caso, o Worker passou 25 a 43% de cada
-  segundo esperando núcleo, por 3 s seguidos, e entregou 168 a 177 blocos por segundo, contra
-  187,5 do tempo real; nenhuma fila dentro dos 8 créditos cobre isso.
+  Com a fila adaptativa, as falhas vieram só de duas sequências de travamentos acima de 40 ms
+  (até 100 ms). Uma build anterior à revisão, na ordem inversa (sem, depois com), deu 3 de 6
+  segundos de 20 a 40 ms com falha sem e 0 de 9 com. Uma primeira versão, que só crescia ao
+  achar a fila quase vazia, deu 2 falhas sem e 0 com, sem carga extra.
+- **O que fica: travamentos acima de ~40 ms**, mais longos que a fila mais funda (37 ms). No
+  pior caso, o Worker passou 25 a 43% de cada segundo esperando núcleo, por 3 s seguidos, e
+  entregou 168 a 177 blocos por segundo, contra 187,5 do tempo real; nenhuma fila dentro dos 8
+  créditos cobre isso.
   - **Mais créditos** (`apu_max_queued_frames`, que o app deixa mudar) dão mais espaço à fila
     adaptativa. Sozinhos, também aprofundam a fila de sempre, que é metade dos créditos; com
     `apu_queue_target` = 4, ela fica em 4 blocos. Não medido.
