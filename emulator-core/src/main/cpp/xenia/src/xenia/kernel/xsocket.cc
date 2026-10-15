@@ -321,7 +321,15 @@ X_STATUS XSocket::SetOption(uint32_t level, uint32_t optname, void* optval_ptr,
   }
 
   if (!tcp_socket_ && !udp_socket_ && !acceptor_) {
+    last_error_ = AsioErrorToWSAError(asio::error::not_socket);
     return X_STATUS_INVALID_HANDLE;
+  }
+
+  // SO_EXCLUSIVEADDRUSE. Bind already refuses a port another socket holds.
+  // Windows refuses the option next to the SO_REUSEADDR kept for relaunches
+  // and other hosts have no such option.
+  if (level == 0xFFFF && optname == ~0x0004u) {
+    return X_STATUS_SUCCESS;
   }
 
   // Map Xbox socket levels to native
@@ -340,14 +348,14 @@ X_STATUS XSocket::SetOption(uint32_t level, uint32_t optname, void* optval_ptr,
 
   int native_handle_val = static_cast<int>(native_handle());
   if (native_handle_val == -1) {
+    last_error_ = AsioErrorToWSAError(asio::error::not_socket);
     return X_STATUS_INVALID_HANDLE;
   }
 
   int ret = setsockopt(native_handle_val, native_level, native_optname,
                        static_cast<char*>(optval_ptr), optlen);
   if (ret < 0) {
-    last_error_ = AsioErrorToWSAError(
-        asio::error_code(errno, asio::error::get_system_category()));
+    last_error_ = HostSocketError();
     XELOGE("XSocket::SetOption: failed with error {:08X}", last_error_);
     return X_STATUS_UNSUCCESSFUL;
   }
@@ -675,6 +683,11 @@ object_ref<XSocket> XSocket::Accept(N_XSOCKADDR* name, int* name_len) {
   auto socket =
       object_ref<XSocket>(new XSocket(kernel_state_, std::move(new_socket)));
   socket->bound_ = true;
+  // An accepted socket starts in the listener's non-blocking mode.
+  if (guest_non_blocking_) {
+    socket->SetHostNonBlocking(true);
+    socket->guest_non_blocking_ = true;
+  }
 
   return socket;
 }
