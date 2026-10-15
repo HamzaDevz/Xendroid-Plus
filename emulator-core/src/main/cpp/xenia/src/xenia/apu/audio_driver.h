@@ -37,6 +37,8 @@ class AudioDriver {
   // Frames submitted but not yet played. Drivers that cannot report it leave
   // the default, which keeps callers on their paced path.
   virtual size_t GetQueuedFrameCount() { return 0; }
+  // Whether GetQueuedFrameCount is the real depth, not the default 0.
+  virtual bool ReportsQueuedFrameCount() const { return false; }
 };
 
 }  // namespace apu

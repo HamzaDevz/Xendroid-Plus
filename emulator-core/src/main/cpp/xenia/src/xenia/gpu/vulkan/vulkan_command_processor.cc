@@ -77,6 +77,7 @@ DECLARE_bool(texture_integer_num_format);
 DECLARE_bool(vulkan_direct_host_resolve);
 DECLARE_bool(vulkan_async_skip_draws);
 DECLARE_bool(vulkan_depth_clamp_without_depth);
+DECLARE_bool(apu_adaptive_queue);
 DECLARE_bool(merge_tiling_bands);
 DECLARE_bool(merge_tiling_bands_call_sites);
 DECLARE_bool(merge_tiling_bands_log);
@@ -501,7 +502,8 @@ void ApplyLiveOptions() {
 // and a property left set (they last until reboot) overrides every later
 // launch 30 frames in - tools/fh_auto.sh clears them before launching.
 // Polled every 30 guest frames from the command processor thread, which is
-// the only reader of these cvars.
+// the only reader of these cvars but apu_adaptive_queue (the Audio Worker's,
+// a plain bool read once a pump).
 void PollDebugPropertyOverrides(CommandProcessor& command_processor) {
   ApplyLiveOptions();
 #if defined(__ANDROID__)
@@ -605,6 +607,9 @@ void PollDebugPropertyOverrides(CommandProcessor& command_processor) {
   PollDebugPropertyOverride("debug.xendroid.ps_vertex_buffers",
                             "vulkan_pixel_shader_vertex_buffers",
                             cvars::vulkan_pixel_shader_vertex_buffers);
+  // Read per audio pump.
+  PollDebugPropertyOverride("debug.xendroid.apu_adaptive_queue",
+                            "apu_adaptive_queue", cvars::apu_adaptive_queue);
   // Read per draw, like msaa_4x_as_2x.
   PollDebugPropertyOverride("debug.xendroid.depth_4x_as_1x",
                             "vulkan_depth_4x_as_1x",

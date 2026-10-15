@@ -25,6 +25,7 @@
 
 DECLARE_int32(spin_park_mode);
 DECLARE_uint32(guest_yield_sleep_us);
+DECLARE_int32(apu_queue_target);
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/byte_stream.h"
@@ -861,6 +862,15 @@ void CommandProcessor::BinTracePoll() {
     if (cvars::spin_park_mode != mode) {
       cvars::spin_park_mode = mode;
       XELOGI("debug.xendroid.spin_park: spin_park_mode = {}", mode);
+    }
+  }
+  // Read by the Audio Worker per pump.
+  if (__system_property_get("debug.xendroid.apu_queue_target", value) > 0 &&
+      value[0] >= '0' && value[0] <= '9') {
+    const int32_t blocks = std::min(std::atoi(value), 64);
+    if (cvars::apu_queue_target != blocks) {
+      cvars::apu_queue_target = blocks;
+      XELOGI("debug.xendroid.apu_queue_target: apu_queue_target = {}", blocks);
     }
   }
   // Read by the guest scheduler's NtYieldExecution at run time.
