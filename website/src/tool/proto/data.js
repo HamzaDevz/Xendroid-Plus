@@ -1,7 +1,7 @@
 /* Dados do simulador.
    - Ajustes, grupos, predefinições, ajustes fixados e flags do Turnip vêm do código do app,
      extraídos no build do site (XDR_SIM, em dados-<versão>.js); nada disso é escrito aqui.
-   - Jogos: os dez medidos no README do projeto, com Title IDs e patches reais do catálogo.
+   - Jogos: os onze medidos no README do projeto, com Title IDs e patches reais do catálogo.
      Formato, tamanho, sessões, saves e coleções são exemplos. Nenhum jogo real recebe uma
      avaliação de compatibilidade: a ficha começa “Sem avaliação”, como no app.
    - Falhas, sessões interrompidas e a comparação A/B de exemplo ficam num jogo fictício. */
@@ -26,7 +26,8 @@ const DEMO = [
   { id: '4541098E', fmt: 'ISO', size: '7,4 GB', pal: ['#0d1a0f', '#2f6b3a', '#e8d58a'], last: 8, ago: 'há 3 semanas', playMin: 21, runs: 2, fav: 0, cols: [], tu: null, dlc: [], saves: 0, cache: [1, 17] },
   { id: '545407F2', fmt: 'ZAR', size: '5,4 GB', pal: ['#05080e', '#1b2c4a', '#cfe1ff'], last: 9, ago: 'há 1 mês', playMin: 47, runs: 3, fav: 0, cols: ['Zerar em 2026'], tu: 8, dlc: [], saves: 1, cache: [2, 38] },
   { id: '5454082B', fmt: 'ISO', size: '7,1 GB', pal: ['#2a1005', '#8e3a14', '#f2b35a'], discs: 2, last: 10, ago: 'há 1 mês', playMin: 120, runs: 5, fav: 1, cols: ['Zerar em 2026'], tu: null, dlc: ['Undead Nightmare'], saves: 2, cache: [3, 64] },
-  { id: FICTIONAL, name: 'Jogo de exemplo', fictional: true, fmt: 'XEX', size: '2,1 GB', pal: ['#04050a', '#1c0f3a', '#3ef0ff'], last: 11, ago: 'há 2 meses', playMin: 9, runs: 3, fav: 0, cols: [], tu: null, dlc: [], saves: 0, cache: [1, 9], noFrames: true, crash: 'SIGSEGV em libvulkan_turnip.so (exemplo fictício)' },
+  { id: '53510823', fmt: 'ISO', size: '6,9 GB', pal: ['#0b1216', '#3d5a66', '#e6eef2'], last: 11, ago: 'há 1 mês', playMin: 52, runs: 4, fav: 0, cols: ['Zerar em 2026'], tu: null, dlc: [], saves: 1, cache: [2, 45] },
+  { id: FICTIONAL, name: 'Jogo de exemplo', fictional: true, fmt: 'XEX', size: '2,1 GB', pal: ['#04050a', '#1c0f3a', '#3ef0ff'], last: 12, ago: 'há 2 meses', playMin: 9, runs: 3, fav: 0, cols: [], tu: null, dlc: [], saves: 0, cache: [1, 9], noFrames: true, crash: 'SIGSEGV em libvulkan_turnip.so (exemplo fictício)' },
 ];
 /* sessão de exemplo: o FPS mediano e o mais baixo seguem a medição do README; o resto é ilustrativo */
 function demoPerf(d) {
