@@ -793,6 +793,7 @@
     <string name="upd_refuse_other_app">it is another app (%1$s)</string>
     <string name="upd_refuse_not_newer">it is not newer than this build</string>
     <string name="upd_refuse_other_key">it is signed with another key, so Android would refuse to update</string>
+    <string name="upd_refuse_unread_key">Android did not report the signatures, so the keys could not be compared; open the release page to install it yourself</string>
     <string name="upd_allow_install">Allow Xendroid+ to install updates, then tap Download and install again</string>
     <string name="upd_not_installed">Update not installed</string>
     <string name="lp_exported">Exported “%1$s”.</string>

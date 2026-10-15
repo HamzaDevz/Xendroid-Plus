@@ -24,20 +24,34 @@ import java.security.MessageDigest
 object UpdateInstaller {
     private const val TAG = "UpdateInstaller"
 
+    /**
+     * What [verify] asks of the download. Android 10, and Android 13 before QPR1 (December
+     * 2022), read an APK file's certificates only for GET_SIGNATURES, other versions for
+     * either flag; without them signingInfo comes back null.
+     */
+    @Suppress("DEPRECATION")
+    internal const val ARCHIVE_FLAGS = PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES
+
     /** Null when [apk] can be installed over this app, else the reason it cannot. */
     fun verify(context: Context, apk: File): String? {
         val pm = context.packageManager
-        val archive = pm.getPackageArchiveInfo(apk.path, PackageManager.GET_SIGNING_CERTIFICATES)
+        val archive = pm.getPackageArchiveInfo(apk.path, ARCHIVE_FLAGS)
             ?: return context.getString(R.string.upd_refuse_not_apk)
         if (archive.packageName != context.packageName) return context.getString(R.string.upd_refuse_other_app, archive.packageName)
         val installed = pm.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
         if (archive.longVersionCode <= installed.longVersionCode) return context.getString(R.string.upd_refuse_not_newer)
-        val theirs = signers(archive)
-        val ours = signers(installed)
-        if (theirs.isEmpty() || ours.isEmpty() || theirs.intersect(ours).isEmpty()) {
-            return context.getString(R.string.upd_refuse_other_key)
-        }
-        return null
+        return keyRefusal(signers(archive), signers(installed))?.let { context.getString(it) }
+    }
+
+    /**
+     * The refusal for an update signed by [theirs] over an install signed by [ours] (SHA-256
+     * of the certificates), or null when they share a key. Signatures Android did not report
+     * are not another key: that would have the user uninstall for nothing.
+     */
+    internal fun keyRefusal(theirs: Set<String>, ours: Set<String>): Int? = when {
+        theirs.isEmpty() || ours.isEmpty() -> R.string.upd_refuse_unread_key
+        theirs.intersect(ours).isEmpty() -> R.string.upd_refuse_other_key
+        else -> null
     }
 
     /** SHA-256 of the signing certificates, including the rotation history when there is one. */

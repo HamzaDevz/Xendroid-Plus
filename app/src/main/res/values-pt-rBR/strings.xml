@@ -793,6 +793,7 @@
     <string name="upd_refuse_other_app">é outro app (%1$s)</string>
     <string name="upd_refuse_not_newer">não é mais nova que esta versão</string>
     <string name="upd_refuse_other_key">foi assinada com outra chave, então o Android recusaria a atualização</string>
+    <string name="upd_refuse_unread_key">o Android não informou as assinaturas, então não deu para comparar as chaves; abra a página da versão para instalar você mesmo</string>
     <string name="upd_allow_install">Permita que o Xendroid+ instale atualizações e toque de novo em Baixar e instalar</string>
     <string name="upd_not_installed">Atualização não instalada</string>
     <string name="lp_exported">“%1$s” exportado.</string>
