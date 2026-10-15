@@ -10,6 +10,7 @@
 #include "xenia/kernel/xsocket.h"
 
 #include <cstring>
+#include <optional>
 #include <thread>
 
 #include "xenia/base/clock.h"
@@ -166,6 +167,17 @@ uint32_t AsioErrorToWSAError(const asio::error_code& ec) {
   return static_cast<uint32_t>(ec.value());
 }
 
+// The Winsock code of the last call that failed on a host socket.
+static uint32_t HostSocketError() {
+#if XE_PLATFORM_WIN32
+  const int host_error = WSAGetLastError();
+#else
+  const int host_error = errno;
+#endif  // XE_PLATFORM_WIN32
+  return AsioErrorToWSAError(
+      asio::error_code(host_error, asio::error::get_system_category()));
+}
+
 XSocket::XSocket(KernelState* kernel_state)
     : XObject(kernel_state, kObjectType) {}
 
@@ -262,6 +274,7 @@ X_STATUS XSocket::Close() {
 X_STATUS XSocket::GetOption(uint32_t level, uint32_t optname, void* optval_ptr,
                             uint32_t* optlen) {
   if (!tcp_socket_ && !udp_socket_ && !acceptor_) {
+    last_error_ = AsioErrorToWSAError(asio::error::not_socket);
     return X_STATUS_INVALID_HANDLE;
   }
 
@@ -284,14 +297,14 @@ X_STATUS XSocket::GetOption(uint32_t level, uint32_t optname, void* optval_ptr,
 
   int native_handle_val = static_cast<int>(native_handle());
   if (native_handle_val == -1) {
+    last_error_ = AsioErrorToWSAError(asio::error::not_socket);
     return X_STATUS_INVALID_HANDLE;
   }
 
   int ret = getsockopt(native_handle_val, native_level, native_optname,
                        static_cast<char*>(optval_ptr), &native_optlen);
   if (ret < 0) {
-    last_error_ = AsioErrorToWSAError(
-        asio::error_code(errno, asio::error::get_system_category()));
+    last_error_ = HostSocketError();
     return X_STATUS_UNSUCCESSFUL;
   }
 
@@ -604,6 +617,35 @@ X_STATUS XSocket::Listen(int backlog) {
   return X_STATUS_SUCCESS;
 }
 
+namespace {
+// Host byte order.
+struct AcceptedPeer {
+  uint32_t address;
+  uint16_t port;
+};
+}  // namespace
+
+// Writes the accepted peer as a guest sockaddr_in or clears it without one.
+// Host sockaddr_in layouts differ (macOS starts with sin_len).
+static void AcceptedName(N_XSOCKADDR* name, int* name_len,
+                         std::optional<AcceptedPeer> peer) {
+  if (name) {
+    std::memset(name, 0, sizeof(*name));
+  }
+  if (!peer) {
+    *name_len = 0;
+    return;
+  }
+  if (name) {
+    const xe::be<uint16_t> port = peer->port;
+    const xe::be<uint32_t> address = peer->address;
+    name->address_family = AF_INET;
+    std::memcpy(name->sa_data, &port, sizeof(port));
+    std::memcpy(name->sa_data + sizeof(port), &address, sizeof(address));
+  }
+  *name_len = sizeof(N_XSOCKADDR);
+}
+
 object_ref<XSocket> XSocket::Accept(N_XSOCKADDR* name, int* name_len) {
   if (!acceptor_) {
     // WSAEOPNOTSUPP for a datagram socket, WSAEINVAL before listen().
@@ -621,22 +663,12 @@ object_ref<XSocket> XSocket::Accept(N_XSOCKADDR* name, int* name_len) {
 
   if (ec) {
     last_error_ = AsioErrorToWSAError(ec);
-    if (name) {
-      std::memset(name, 0, *name_len);
-    }
-    *name_len = 0;
+    AcceptedName(name, name_len, std::nullopt);
     return nullptr;
   }
-
-  // Fill in the client address
-  if (name && *name_len >= static_cast<int>(sizeof(sockaddr_in))) {
-    sockaddr_in* addr = reinterpret_cast<sockaddr_in*>(name);
-    addr->sin_family = AF_INET;
-    addr->sin_port = htons(peer_endpoint.port());
-    addr->sin_addr.s_addr = htonl(peer_endpoint.address().to_v4().to_uint());
-    std::memset(reinterpret_cast<char*>(addr) + 8, 0, 8);  // Zero sin_zero
-  }
-  *name_len = sizeof(sockaddr_in);
+  AcceptedName(name, name_len,
+               AcceptedPeer{peer_endpoint.address().to_v4().to_uint(),
+                            peer_endpoint.port()});
 
   // Create a kernel object to represent the new socket
   auto socket =
@@ -940,13 +972,7 @@ X_STATUS XSocket::QueryName(bool peer, N_XSOCKADDR_IN* name) {
   int result = peer ? getpeername(static_cast<int>(handle), host_address, &len)
                     : getsockname(static_cast<int>(handle), host_address, &len);
   if (result == -1) {
-#if XE_PLATFORM_WIN32
-    const int host_error = WSAGetLastError();
-#else
-    const int host_error = errno;
-#endif  // XE_PLATFORM_WIN32
-    last_error_ = AsioErrorToWSAError(
-        asio::error_code(host_error, asio::error::get_system_category()));
+    last_error_ = HostSocketError();
     return X_STATUS_UNSUCCESSFUL;
   }
 
