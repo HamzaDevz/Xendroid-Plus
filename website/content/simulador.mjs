@@ -20,6 +20,7 @@ export const README_TITLES = {
   'Gears of War 3': '4D5308AB',
   'Halo 4': '4D530919',
   'Need for Speed: Most Wanted': '45410961',
+  'Rise of the Tomb Raider': '53510823',
   'Sonic Unleashed': '53450812',
   'Halo: Reach': '4D53085B',
   'Crysis 3': '4541098E',
