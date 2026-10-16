@@ -171,6 +171,30 @@ lote é um PR a partir do `main`, com testes de host e os jogos citados quando h
 | 5 | G2, G4, G8, G9 | Adaptar ao resolve, ao fetch e ao cache de texturas próprios do Xendroid+ | M | 545407D4, 555308CE, 5451080D, 4D530808, 534307D5 |
 | 6 | C7, M4, M6 e a promoção de VEC128 (depois do C2) | Desempenho: só com A/B no aparelho | M–G | A/B no POCO F7 |
 
+### O que mudou ao portar (2026-10-16)
+
+O lote 1 virou o PR #40 e o lote 2, o PR #41. Na revisão de cada um, alguns commits
+saíram do lote, porque dependem de outro que ainda não está aqui ou porque esbarram em código
+próprio do Xendroid+:
+
+| Commit | Tema | Por que saiu | Vai com |
+|---|---|---|---|
+| `2f6baa7514` | K5 | O diretório de conteúdo criado pelo jogo precisa do `f5c8af81a`, que monta pacotes guardados como arquivo. Sem ele, o jogo copia um STFS cru que nunca é listado e que bloqueia os instaladores do Xendroid+ | `f5c8af81a` e `16ba84808` |
+| `87c2411270` | M7 | Muda o comportamento do heap com alinhamento físico do Xendroid+ e reprova `physical_heap_test.cc` | O teste atualizado e um jogo que use `MmAllocatePhysicalMemoryEx` em 0xE0000000 |
+| `d8e5dae74e` | M2 | Um arquivo com outro handle aberto deixa de poder ser sobrescrito, e o `WriteGpd` do perfil usa esse caminho | Truncar no lugar quando há handles abertos; vem primeiro no próximo lote de arquivos |
+| `8ae1c14856` | K5 | O ramo novo nunca roda neste código | `b11458e49`, se fizer falta |
+| `1222c23f78` | G7 | A espera de memexport do Xendroid+ (readback adiado, motivos de espera) tem outro desenho | Lote 5 |
+| `10da45ea40`, `4d83110dcd` | C1 | O XER[OV]/[SO] das formas OE põe um load e um store de contexto em todo compare. O upstream compensa com o passe de stores de CR mortos, que não está aqui | Lote 6, com `689590ba3c` e `f6f9a03768` (C7) |
+
+A revisão do lote 1 pediu três coisas, que entraram nele:
+- `3ecd9d36b`: a mídia de inicialização é procurada pelo ponto de montagem;
+- `3fbbc60f9`: as buscas de links simbólicos passam a usar o lock;
+- uma checagem própria: um handle de diretório raiz que não é arquivo é recusado.
+
+No lote 2, a revisão pediu duas correções próprias, que entraram nele: o ponteiro do ring publicado
+no meio do burst também avisa o progresso da GPU, e a checagem de memexport dos vertex buffers usa o
+endereço físico.
+
 ## 7. Fora da lista
 
 - **Backend A64 de Will Martin (oaknut):** o próprio edge reverteu.
