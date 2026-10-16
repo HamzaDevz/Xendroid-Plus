@@ -361,6 +361,7 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
   }
 
   bool created = false;
+  bool truncate_in_place = false;
   if (!entry) {
     // Remember that we are creating this new, instead of replacing.
     created = true;
@@ -373,26 +374,28 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
         assert_always();
         return X_STATUS_ACCESS_DENIED;
       case FileDisposition::kSuperscede:
+      case FileDisposition::kOverwrite:
+      case FileDisposition::kOverwriteIf:
+        *out_action = creation_disposition == FileDisposition::kSuperscede
+                          ? FileAction::kSuperseded
+                          : FileAction::kOverwritten;
+        if (entry->has_open_files()) {
+          // Other handles keep it open, so it can't be deleted and recreated
+          // under them (their entry would be freed). NT truncates it in place
+          // instead, and the other handles see the new contents.
+          truncate_in_place = true;
+          break;
+        }
         // Replace (by delete + recreate).
         if (!entry->Delete()) {
           return X_STATUS_ACCESS_DENIED;
         }
         entry = nullptr;
-        *out_action = FileAction::kSuperseded;
         break;
       case FileDisposition::kOpen:
       case FileDisposition::kOpenIf:
         // Normal open.
         *out_action = FileAction::kOpened;
-        break;
-      case FileDisposition::kOverwrite:
-      case FileDisposition::kOverwriteIf:
-        // Overwrite (we do by delete + recreate).
-        if (!entry->Delete()) {
-          return X_STATUS_ACCESS_DENIED;
-        }
-        entry = nullptr;
-        *out_action = FileAction::kOverwritten;
         break;
     }
   }
@@ -409,6 +412,15 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
   auto result = entry->Open(desired_access, out_file);
   if (XFAILED(result)) {
     *out_action = FileAction::kDoesNotExist;
+  } else if (truncate_in_place) {
+    result = (*out_file)->SetLength(0);
+    if (XFAILED(result)) {
+      (*out_file)->Destroy();
+      *out_file = nullptr;
+      *out_action = FileAction::kDoesNotExist;
+    } else {
+      entry->update();
+    }
   }
   return result;
 }
