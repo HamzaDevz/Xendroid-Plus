@@ -149,6 +149,11 @@ X_STATUS XMutant::ReleaseMutant(uint32_t priority_increment, bool abandon,
     // Clear ownership first: a waiter acquiring on another host thread must not
     // be stranded, and SyncFromGuest must not read this release as a guest one.
     owning_thread_ = nullptr;
+    // And visibly first. The clear is only a store-release, which on ARM64 lets
+    // the header store below be seen before it: SyncFromGuest on another core
+    // could then read the header as free with the owner still set, win its
+    // swap and release the mutant a second time.
+    std::atomic_thread_fence(std::memory_order_seq_cst);
   }
   auto& signal_state = memory()
                            ->TranslateVirtual<X_KMUTANT*>(guest_object())
