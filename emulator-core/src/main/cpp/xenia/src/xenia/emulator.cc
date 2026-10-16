@@ -1593,6 +1593,13 @@ void Emulator::RelaunchTitle(const std::string& host_path,
   if (graphics_system_ && graphics_system_->command_processor()) {
     graphics_system_->command_processor()->Shutdown();
   }
+  // The other host workers too, as they're not terminated below.
+  if (graphics_system_) {
+    graphics_system_->StopFrameLimiter();
+  }
+  if (audio_system_) {
+    audio_system_->StopWorker();
+  }
 
 #if XE_PLATFORM_xendroid
   // Mirror ResetTitle (emulator.cc:1529): stop the cooperative dispatch threads
@@ -1609,6 +1616,11 @@ void Emulator::RelaunchTitle(const std::string& host_path,
             kernel::XObject::Type::Thread);
     XELOGI("RelaunchTitle: terminating {} threads", threads.size());
     for (auto thread : threads) {
+      // Their owners stop host threads. Killing one could leave a lock it
+      // holds taken for good.
+      if (thread->is_host_thread()) {
+        continue;
+      }
       thread->Terminate(0);
     }
   }
@@ -1744,6 +1756,13 @@ void Emulator::ResetTitle() {
   if (graphics_system_ && graphics_system_->command_processor()) {
     graphics_system_->command_processor()->Shutdown();
   }
+  // The other host workers too, as they're not terminated below.
+  if (graphics_system_) {
+    graphics_system_->StopFrameLimiter();
+  }
+  if (audio_system_) {
+    audio_system_->StopWorker();
+  }
 
   // Stop the dispatch thread before tearing down guest threads. Their fibers
   // run on it, so terminating one from this host thread while the dispatcher is
@@ -1757,6 +1776,11 @@ void Emulator::ResetTitle() {
             kernel::XObject::Type::Thread);
     XELOGI("ResetTitle: terminating {} threads", threads.size());
     for (auto thread : threads) {
+      // Their owners stop host threads. Killing one could leave a lock it
+      // holds taken for good.
+      if (thread->is_host_thread()) {
+        continue;
+      }
       thread->Terminate(0);
     }
   }
