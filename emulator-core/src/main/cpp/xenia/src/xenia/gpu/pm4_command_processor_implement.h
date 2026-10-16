@@ -2015,6 +2015,9 @@ uint32_t COMMAND_PROCESSOR::ExecutePrimaryBuffer(uint32_t read_index,
         xe::store_and_swap<uint32_t>(
             memory_->TranslatePhysical(writeback_ptr),
             uint32_t(reader_.read_offset() / sizeof(uint32_t)));
+        // Like the final write-back, so a guest thread parked waiting for ring
+        // space (spin_park_mode) wakes now rather than at its timeout.
+        NotifyGuestGpuProgress();
       }
       remaining_at_writeback = remaining;
     }
