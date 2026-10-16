@@ -81,8 +81,10 @@ dword_result_t NtCreateFile_entry(lpdword_t handle_out, dword_t desired_access,
   if (has_root_handle) {
     auto root_file = kernel_state()->object_table()->LookupObject<XFile>(
         object_attrs->root_directory);
-    assert_not_null(root_file);
-    assert_true(root_file->type() == XObject::Type::File);
+    // A closed handle or another object type: release builds drop asserts.
+    if (!root_file) {
+      return X_STATUS_INVALID_HANDLE;
+    }
 
     root_entry = root_file->entry();
   }
