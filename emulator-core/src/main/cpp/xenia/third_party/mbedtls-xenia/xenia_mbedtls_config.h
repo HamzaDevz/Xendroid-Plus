@@ -4,6 +4,11 @@
 #define XENIA_MBEDTLS_CONFIG_H_
 
 #define MBEDTLS_AES_C
+// The AES tables as constant data. Otherwise aes.c fills them on the first key
+// setup behind a plain flag, which another thread can see set before the tables
+// (ARM64 orders neither), and the XeCryptAesEcb/Cbc exports can run on a guest
+// state no key setup in this process ever built them for.
+#define MBEDTLS_AES_ROM_TABLES
 #define MBEDTLS_BIGNUM_C
 #define MBEDTLS_CIPHER_MODE_CBC
 #define MBEDTLS_DES_C
