@@ -591,6 +591,17 @@ int XexModule::ReadImageBasicCompressed(const void* xex_addr,
   uint32_t uncompressed_size = 0;
 
   auto* file_info = opt_file_format_info();
+  // The block list comes from the file and must lie inside the header that was
+  // read, or both loops below read past it.
+  const uintptr_t header_begin = uintptr_t(xex_header_mem_.data());
+  const uintptr_t header_end = header_begin + xex_header_mem_.size();
+  const uintptr_t info_begin = uintptr_t(file_info);
+  if (!file_info || info_begin < header_begin || info_begin > header_end ||
+      header_end - info_begin < 8 || file_info->info_size < 8 ||
+      file_info->info_size > header_end - info_begin) {
+    XELOGE("XEX: the basic compression block list is outside the header");
+    return 1;
+  }
   auto& comp_info = file_info->compression_info.basic;
 
   uint32_t block_count = (file_info->info_size - 8) / 8;
@@ -633,6 +644,22 @@ int XexModule::ReadImageBasicCompressed(const void* xex_addr,
   for (size_t n = 0; n < block_count; n++) {
     const uint32_t data_size = comp_info.blocks[n].data_size;
     const uint32_t zero_size = comp_info.blocks[n].zero_size;
+
+    // A block must fit what was allocated and what is left of the file, or a
+    // crafted header reads and writes past them - the library scan loads the
+    // XEX of every game it lists. A block of zeros only writes nothing.
+    const size_t written = size_t(d - buffer);
+    const size_t consumed = size_t(p - source_buffer);
+    if (consumed > exe_length || data_size > exe_length - consumed ||
+        (data_size &&
+         (written > total_size || data_size > total_size - written))) {
+      XELOGE(
+          "XEX: basic compression block {} does not fit: {} bytes at {} of a "
+          "{}-byte image, {} of a {}-byte file",
+          n, data_size, written, total_size, consumed, exe_length);
+      mbedtls_aes_free(&context);
+      return 1;
+    }
 
     switch (opt_file_format_info()->encryption_type) {
       case XEX_ENCRYPTION_NONE:
