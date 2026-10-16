@@ -43,7 +43,15 @@ bool HostPathEntry::has_open_files() const {
 void HostPathEntry::ReleaseFile() {
   auto global_lock = global_critical_region_.Acquire();
   if (open_files_.fetch_sub(1) == 1 && delete_on_close() && parent()) {
-    Delete();
+    // On success this entry is gone. A directory with a child still open
+    // refuses: drop the pending deletion then, or an unrelated open and close
+    // much later would delete the whole tree (and opens would be refused as
+    // delete-pending until then).
+    if (!Delete()) {
+      XELOGW("{}: could not delete {} on its last close", __func__,
+             host_path_);
+      SetForDeletion(false);
+    }
   }
 }
 

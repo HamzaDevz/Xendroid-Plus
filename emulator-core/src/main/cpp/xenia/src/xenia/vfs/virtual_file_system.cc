@@ -325,6 +325,13 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
     }
   }
 
+  // Its deletion waits for the last handle to close (see
+  // HostPathEntry::ReleaseFile). NT refuses to open it until then, and an
+  // overwrite here would write contents that the last close deletes.
+  if (entry && entry->delete_on_close()) {
+    return X_STATUS_DELETE_PENDING;
+  }
+
   // Check if exists (if we need it to), or that it doesn't (if it shouldn't).
   switch (creation_disposition) {
     case FileDisposition::kOpen:
