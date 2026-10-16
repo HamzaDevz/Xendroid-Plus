@@ -105,7 +105,10 @@ std::unique_ptr<Entry> HostPathEntry::CreateEntryInternal(
     const std::string_view name, uint32_t attributes) {
   auto full_path = host_path_ / xe::to_path(name);
   if (attributes & kFileAttributeDirectory) {
-    if (!std::filesystem::create_directories(full_path)) {
+    // Without the error_code overload this throws (and ends the app) when a
+    // file is in the way.
+    std::error_code ec;
+    if (!std::filesystem::create_directories(full_path, ec)) {
       return nullptr;
     }
   } else {

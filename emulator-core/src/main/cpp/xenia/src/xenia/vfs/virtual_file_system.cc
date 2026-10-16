@@ -225,6 +225,11 @@ Entry* VirtualFileSystem::CreatePath(const std::string_view path,
   }
 
   for (size_t i = next_part; i < path_parts.size(); ++i) {
+    // Nothing goes beneath a file (a content package collapsed to its one
+    // payload file resolves as a file).
+    if (!(parent_entry->attributes() & kFileAttributeDirectory)) {
+      return nullptr;
+    }
     const bool is_last = i == path_parts.size() - 1;
     auto child_entry = parent_entry->CreateEntry(
         path_parts[i], is_last ? attributes : kFileAttributeDirectory);
