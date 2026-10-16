@@ -23,7 +23,10 @@ inline uint32_t XeCryptBnQwNeRsaPubCrypt(const uint8_t* qw_a, uint8_t* qw_b,
                                          uint32_t num_qwords,
                                          uint32_t exponent) {
   // Reject keys below 512 bits (8 qwords) to match original BCrypt behavior.
-  if (num_qwords < 8) {
+  // The size comes from the guest, and past MBEDTLS_MPI_MAX_SIZE bytes
+  // num_qwords * 8 could wrap and the copies below run past the vectors. Real
+  // keys are at most 0x40 qwords.
+  if (num_qwords < 8 || num_qwords > MBEDTLS_MPI_MAX_SIZE / 8) {
     return 0;
   }
 
