@@ -1380,9 +1380,17 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
           coord_x_wide = builder_->createNoContractionBinOp(
               spv::OpFDiv, type_float_, x_in_row, row_width_float);
 
-          // coord_2d.y = row_index / num_rows (normalized)
+          // coord_2d.y = (row_index + 0.5) / num_rows (normalized) - sample at
+          // the center of the row, not its edge. At the edge, linear filtering
+          // would blend 50/50 with the previous row (texels 8192 apart), and
+          // even point sampling could pick the previous row when
+          // (row_index / num_rows) * num_rows rounds to just below row_index.
           coord_y_wide = builder_->createNoContractionBinOp(
-              spv::OpFDiv, type_float_, row_index, num_rows);
+              spv::OpFDiv, type_float_,
+              builder_->createNoContractionBinOp(
+                  spv::OpFAdd, type_float_, row_index,
+                  builder_->makeFloatConstant(0.5f)),
+              num_rows);
         }
         if_wide_1d.makeEndIf();
         coordinates[0] =

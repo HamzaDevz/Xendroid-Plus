@@ -1283,6 +1283,7 @@ void TextureCache::BindingInfoFromFetchConstant(
     // No texture data at all.
     return;
   }
+  uint32_t pitch = fetch.pitch;
   if (fetch.dimension == xenos::DataDimension::k1D) {
     bool is_invalid_1d = false;
     // Handle wide 1D textures (> 8192 wide) by mapping them to a 2D grid.
@@ -1300,6 +1301,9 @@ void TextureCache::BindingInfoFromFetchConstant(
       // when num_rows >> N becomes 1 while the shader still expects multiple
       // rows. Mipmaps are rarely used with 1D lookup textures anyway.
       mip_max_level = 0;
+      // The guest pitch is meaningless for a texture the guest believes is 1D
+      // (the 9 bit field couldn't even express the line width).
+      pitch = xenos::kTexture2DCubeMaxWidthHeight >> 5;
     }
     assert_false(fetch.tiled);
     if (fetch.tiled) {
@@ -1330,7 +1334,7 @@ void TextureCache::BindingInfoFromFetchConstant(
   key_out.width_minus_1 = width_minus_1;
   key_out.height_minus_1 = height_minus_1;
   key_out.depth_or_array_size_minus_1 = depth_or_array_size_minus_1;
-  key_out.pitch = fetch.pitch;
+  key_out.pitch = pitch;
   key_out.mip_max_level = mip_max_level;
   key_out.tiled = fetch.tiled;
   // With the base level alone and the packed mip tail below it (both sides

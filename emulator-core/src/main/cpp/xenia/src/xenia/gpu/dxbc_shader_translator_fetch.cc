@@ -1282,7 +1282,14 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
                    dxbc::Src::LF(float(xenos::kTexture2DCubeMaxWidthHeight)));
           a_.OpRoundPI(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
                        dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
-          // coord.y = row_index / num_rows
+          // coord.y = (row_index + 0.5) / num_rows - sample at the center of
+          // the row, not its edge. At the edge, linear filtering would blend
+          // 50/50 with the previous row (texels 8192 apart), and even point
+          // sampling could pick the previous row when
+          // (row_index / num_rows) * num_rows rounds to just below row_index.
+          a_.OpAdd(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
+                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW),
+                   dxbc::Src::LF(0.5f));
           a_.OpDiv(dxbc::Dest::R(coord_and_sampler_temp, 0b0010),
                    dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW),
                    dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
