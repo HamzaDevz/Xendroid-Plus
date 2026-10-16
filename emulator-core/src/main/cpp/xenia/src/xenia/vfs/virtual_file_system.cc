@@ -388,6 +388,12 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
       case FileDisposition::kSuperscede:
       case FileDisposition::kOverwrite:
       case FileDisposition::kOverwriteIf:
+        if (entry->attributes() & kFileAttributeDirectory) {
+          // FAT only opens an existing directory. Replacing it deleted the
+          // whole tree (or, with handles open, truncated a directory fd).
+          *out_action = FileAction::kExists;
+          return X_STATUS_OBJECT_NAME_COLLISION;
+        }
         *out_action = creation_disposition == FileDisposition::kSuperscede
                           ? FileAction::kSuperseded
                           : FileAction::kOverwritten;
