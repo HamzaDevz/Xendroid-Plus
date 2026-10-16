@@ -8,6 +8,9 @@
  */
 
 #include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
+
+#include <vector>
+
 #include "xenia/base/atomic.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/math.h"
@@ -1653,45 +1656,35 @@ static void YankApcList(PPCContext* ctx, X_KTHREAD* current_thread,
   uint32_t unlocked_irql =
       xeKeKfAcquireSpinLock(ctx, &current_thread->apc_lock);
 
-  XAPC* result = nullptr;
   auto& user_apc_queue = current_thread->apc_lists[apc_mode];
 
-  if (user_apc_queue.empty(ctx)) {
-    result = nullptr;
-  } else {
-    result = user_apc_queue.HeadObject(ctx);
+  // The APCs the rundown below touches, taken while the list is still locked.
+  // An APC owned by a timer (XAPC::kOwnedKernelRoutine) is only unlinked: once
+  // the lock is released its timer can free it or queue it again, on this
+  // thread or another, so neither it nor its links may be read afterwards.
+  std::vector<uint32_t> rundown_apcs;
+  if (!user_apc_queue.empty(ctx)) {
     for (auto&& entry : user_apc_queue.IterateForward(ctx)) {
       entry.enqueued = 0;
+      if (rundown && (entry.rundown_routine ||
+                      entry.kernel_routine != XAPC::kOwnedKernelRoutine)) {
+        rundown_apcs.push_back(ctx->HostToGuestVirtual(&entry));
+      }
     }
     util::XeRemoveEntryList(&user_apc_queue, ctx);
   }
 
   xeKeKfReleaseSpinLock(ctx, &current_thread->apc_lock, unlocked_irql);
 
-  if (rundown && result) {
-    XAPC* current_entry = result;
-    while (true) {
-      XAPC* this_entry = current_entry;
-      uint32_t next_entry = this_entry->list_entry.flink_ptr;
-
-      if (this_entry->rundown_routine) {
-        uint64_t args[] = {ctx->HostToGuestVirtual(this_entry)};
-        kernel_state()->processor()->Execute(ctx->thread_state,
-                                             this_entry->rundown_routine, args,
-                                             xe::countof(args));
-      } else if (this_entry->kernel_routine != XAPC::kOwnedKernelRoutine) {
-        ctx->kernel_state->memory()->SystemHeapFree(
-            ctx->HostToGuestVirtual(this_entry));
-      }
-
-      if (next_entry == 0) {
-        break;
-      }
-      current_entry = user_apc_queue.ListEntryObject(
-          ctx->TranslateVirtual<X_LIST_ENTRY*>(next_entry));
-      if (current_entry == result) {
-        break;
-      }
+  for (uint32_t apc_address : rundown_apcs) {
+    XAPC* this_entry = ctx->TranslateVirtual<XAPC*>(apc_address);
+    if (this_entry->rundown_routine) {
+      uint64_t args[] = {apc_address};
+      kernel_state()->processor()->Execute(ctx->thread_state,
+                                           this_entry->rundown_routine, args,
+                                           xe::countof(args));
+    } else {
+      ctx->kernel_state->memory()->SystemHeapFree(apc_address);
     }
   }
 }
