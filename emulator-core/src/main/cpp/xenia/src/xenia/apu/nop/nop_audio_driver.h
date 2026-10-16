@@ -10,6 +10,8 @@
 #ifndef XENIA_APU_NOP_NOP_AUDIO_DRIVER_H_
 #define XENIA_APU_NOP_NOP_AUDIO_DRIVER_H_
 
+#include <cstdint>
+
 #include "xenia/apu/audio_driver.h"
 #include "xenia/base/threading.h"
 
@@ -31,6 +33,10 @@ class NopAudioDriver : public AudioDriver {
   void Resume() override {}
   void SetVolume(float volume) override {}
   void Shutdown() override {}
+  // Reads as a full queue. The frames go nowhere and the semaphore is released
+  // on submit, so with any lower depth apu_pump_topup would run the guest's
+  // callback a second time every pump, twice real time.
+  size_t GetQueuedFrameCount() override { return SIZE_MAX; }
 
  private:
   xe::threading::Semaphore* semaphore_ = nullptr;
