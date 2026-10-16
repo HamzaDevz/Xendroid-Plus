@@ -195,6 +195,33 @@ No lote 2, a revisão pediu duas correções próprias, que entraram nele: o pon
 no meio do burst também avisa o progresso da GPU, e a checagem de memexport dos vertex buffers usa o
 endereço físico.
 
+O lote 3 virou o PR #42. Saíram dele:
+- `c097a6d319`: só limpeza;
+- `de8e60601c`, `8a4d405af6` e `e8c05cd05f` (G11): conflitam em mais de 250 linhas com o cache de
+  pipelines assíncrono do Xendroid+ e vão para um PR próprio, com teste no aparelho e cache limpo;
+- `4e019f4090`, `b62d6f9edd` e `0554993759`: dependem do código de System Link, que não está aqui.
+
+Entraram nele:
+- o `728c93d652` (`SignalAndWait` entra na espera antes de sinalizar), que a triagem dera como
+  presente;
+- três correções próprias, achadas na revisão:
+  - o `select` no Android (sockets fechados, `nfds` do POSIX, falhas);
+  - a ordem das escritas ao liberar um mutant em ARM64;
+  - o rundown de APCs na saída de thread.
+
+O que a triagem e o porte deixaram passar, e como se confere agora:
+- **Reordenações contadas como presentes.** A triagem automática mede a fração das linhas
+  adicionadas que já existem no arquivo, e um commit que só muda linhas de lugar dá 100%. Foi o caso
+  do `728c93d652`.
+- **Presença parcial que esconde o essencial.** O `947075f88` (o 1D largo do upstream) estava 93%
+  presente, mas os 7% que faltavam eram as correções: o centro da linha e o passo de 8192 texels. As
+  partes que faltavam entraram no lote 5.
+- **Hunks no lugar errado.** O `git am -3` aplica um hunk onde o contexto bate, e no lote 3 dois
+  caíram em outra função com contexto idêntico: o "recv devolve 0" em `Send`/`SendTo` e uma marcação
+  de re-poll no ramo errado de `WakeForSignal`. A revisão pegou os dois. Agora um script compara, em
+  cada commit portado, as funções dos hunks com as do upstream. Nos lotes 1 e 2 não havia outro
+  caso.
+
 ## 7. Fora da lista
 
 - **Backend A64 de Will Martin (oaknut):** o próprio edge reverteu.
