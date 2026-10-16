@@ -32,25 +32,46 @@ VirtualFileSystem::~VirtualFileSystem() {
 
 void VirtualFileSystem::Clear() {
   devices_.clear();
+  retired_devices_.clear();
   symlinks_.clear();
 }
 
 bool VirtualFileSystem::RegisterDevice(std::unique_ptr<Device> device) {
   auto global_lock = global_critical_region_.Acquire();
+  ReleaseRetiredDevices();
   devices_.emplace_back(std::move(device));
   return true;
 }
 
 bool VirtualFileSystem::UnregisterDevice(const std::string_view path) {
   auto global_lock = global_critical_region_.Acquire();
+  ReleaseRetiredDevices();
   for (auto it = devices_.begin(); it != devices_.end(); ++it) {
     if ((*it)->mount_path() == path) {
       XELOGD("Unregistered device: {}", (*it)->mount_path());
+      // A handle the title still holds points at the device's entries, and
+      // closing it releases its entry (HostPathFile), so such a device stays
+      // alive, unmounted, until its handles are closed (XamSwapDisc of a game
+      // extracted to a folder, a profile or package closed under an open
+      // file).
+      auto root = (*it)->ResolvePath("");
+      if (root && root->has_open_files()) {
+        retired_devices_.push_back(std::move(*it));
+      }
       devices_.erase(it);
       return true;
     }
   }
   return false;
+}
+
+void VirtualFileSystem::ReleaseRetiredDevices() {
+  // Called under the global lock, which ReleaseFile holds too, so a device
+  // with no open handles has no close still running on its entries.
+  std::erase_if(retired_devices_, [](const auto& device) {
+    auto root = device->ResolvePath("");
+    return !root || !root->has_open_files();
+  });
 }
 
 Device* VirtualFileSystem::GetDevice(const std::string_view path) {
