@@ -222,6 +222,29 @@ O que a triagem e o porte deixaram passar, e como se confere agora:
   cada commit portado, as funções dos hunks com as do upstream. Nos lotes 1 e 2 não havia outro
   caso.
 
+O lote 4 virou o PR #44. Saíram dele `ac1ece3086`, `ddfe2b87f9` e `566a58ebf0`: a cripto do kernel
+reescrita sobre o Mbed TLS, que não está aqui. Os bugs que eles corrigem são reais:
+- o MD5 escreve além do estado do guest;
+- o SHA-512 devolve o digest errado;
+- o AES guarda as chaves de decifra na ordem errada e passa do fim do buffer num bloco parcial de
+  CBC.
+
+Ficam para um PR próprio, com o Mbed TLS ou com correções sobre o código atual.
+
+Entrou a parte do `vec128.h` do `2a1097177`, um commit de x64 que a triagem deixou de fora: os
+construtores de `vec128` viram `constexpr`, e o `a5f59a48ae` precisa disso para compilar.
+
+O lote 5 virou o PR #43, que sai do lote 2 (#41) porque mexe nos mesmos arquivos. Entraram:
+- as partes que faltavam do `947075f88`;
+- o `2248561d8`, que dá um `Memory` aos testes do `PhysicalHeap`;
+- uma correção própria: texturas 1D largas filtravam sempre com point.
+
+O resolve A8 com fonte 4x vai pelo caminho do EDRAM, porque o shader direto de 4x lê RGBA com a
+troca vermelho/azul.
+
+Fica para depois o `7347cd12e` (resolve com o comando de cópia 2). Sem ele, as máscaras de Kinect do
+5345084D ainda não funcionam, embora a ordem de bits de `k_DXT3A_AS_1_1_1_1` já esteja certa.
+
 ## 7. Fora da lista
 
 - **Backend A64 de Will Martin (oaknut):** o próprio edge reverteu.
