@@ -531,16 +531,27 @@ X_RESULT ContentManager::SetContentThumbnail(
     std::vector<uint8_t> buffer) {
   auto global_lock = global_critical_region_.Acquire();
   auto package_path = ResolvePackagePath(xuid, data);
-  std::filesystem::create_directories(package_path);
-  if (std::filesystem::exists(package_path)) {
-    auto thumb_path = package_path / vfs::kPackageThumbnailFileName;
-    auto file = xe::filesystem::OpenFile(thumb_path, "wb");
-    fwrite(buffer.data(), 1, buffer.size(), file);
-    fclose(file);
+  std::error_code ec;
+  if (std::filesystem::exists(package_path, ec) &&
+      !std::filesystem::is_directory(package_path, ec)) {
+    // A package kept as one container file carries its thumbnail in its
+    // header and is mounted read-only, so there is nowhere to write one.
+    XELOGW("{}: {} is a container file, thumbnail not written", __func__,
+           package_path);
     return X_ERROR_SUCCESS;
-  } else {
+  }
+  std::filesystem::create_directories(package_path, ec);
+  if (!std::filesystem::is_directory(package_path, ec)) {
     return X_ERROR_FILE_NOT_FOUND;
   }
+  auto thumb_path = package_path / vfs::kPackageThumbnailFileName;
+  auto file = xe::filesystem::OpenFile(thumb_path, "wb");
+  if (!file) {
+    return X_ERROR_ACCESS_DENIED;
+  }
+  fwrite(buffer.data(), 1, buffer.size(), file);
+  fclose(file);
+  return X_ERROR_SUCCESS;
 }
 
 X_RESULT ContentManager::DeleteContent(const uint64_t xuid,
