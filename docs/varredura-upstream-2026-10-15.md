@@ -245,6 +245,36 @@ troca vermelho/azul.
 Fica para depois o `7347cd12e` (resolve com o comando de cópia 2). Sem ele, as máscaras de Kinect do
 5345084D ainda não funcionam, embora a ordem de bits de `k_DXT3A_AS_1_1_1_1` já esteja certa.
 
+O lote 1 (PR #40) recebeu os commits de arquivos que tinham saído dele: `16ba848086`,
+`f5c8af81a5`, `2f6baa7514` e `d8e5dae74e`. Com o `d8e5dae74e`, uma entrada com handles abertos
+recusa ser apagada, por isso veio junto uma correção própria: sobrescrever um arquivo que outro
+handle mantém aberto o trunca no lugar, como no NT. A revisão achou mais oito problemas nesses
+commits ou expostos por eles, corrigidos no próprio lote:
+- um device desmontado com handles abertos fica vivo até o último handle fechar;
+- o app não cai mais com um pacote que é um arquivo só (miniatura, diretório criado dentro dele);
+- abrir um arquivo com exclusão pendente devolve `STATUS_DELETE_PENDING`, como no NT;
+- o gerenciador de conteúdo, o instalador e a lixeira do app aceitam o pacote em arquivo.
+
+A cripto do kernel virou o PR #45, que sai do lote 4 (#44). Ele traz:
+- o Mbed TLS 3.6.7 copiado para a árvore, só os fontes de cripto que o build usa;
+- os 11 commits da série do upstream, de `4101dfa07` a `ddfe2b87f9`;
+- cinco correções próprias pedidas pela revisão:
+  - as tabelas do AES como dados constantes, porque a inicialização preguiçosa do Mbed TLS não
+    é segura entre threads em ARM64;
+  - limites no RSA e na compressão básica do XEX;
+  - o link dos testes do kernel;
+  - a licença do Mbed TLS no app.
+
+O lote 6 virou o PR #46, que sai de um merge dos lotes 2 e 4. Ele traz os 21 commits de
+desempenho, com o passe de stores de CR mortos e o XER[OV]/[SO] que tinham saído do lote 2.
+- **Fusão de compare e desvio (`aba5703fa0`):** escrita para o emissor daqui, porque a
+  infraestrutura de handoff do upstream não está aqui.
+- **Ficaram de fora:**
+  - as chamadas mais baratas (`b416d19675`, `7a97888962`, `6fc16d118d`): dependem do rastreio de
+    FPCR por bloco e do alcance de desvios do upstream;
+  - o ritmo novo do áudio do `12e3b4223d`: o top-up do Xendroid+ já repõe depois de uma parada;
+  - a promoção de VEC128, que continua desligada: aqui ela deforma os corpos no Halo 4.
+
 ## 7. Fora da lista
 
 - **Backend A64 de Will Martin (oaknut):** o próprio edge reverteu.
