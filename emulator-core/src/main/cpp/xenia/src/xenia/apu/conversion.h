@@ -127,14 +127,14 @@ inline void sequential_6_BE_to_interleaved_6_LE(float* output,
 inline void sequential_6_BE_to_interleaved_2_LE(float* output,
                                                 const float* input,
                                                 size_t ch_sample_count) {
-  assert_true(ch_sample_count % 4 == 0);
   // NEON mirror of the SSE2 path above. Byte swap is done in the integer
   // domain (rev32 within each 32-bit lane) so NaN-pattern floats round-trip
   // bit-exactly. The adds keep the same association as the SSE2 version so
   // results match x86 builds bit-for-bit.
   const float32x4_t surround_gain = vdupq_n_f32(0.707106781f);
   const float32x4_t lfe_gain = vdupq_n_f32(0.5f);
-  for (size_t sample = 0; sample < ch_sample_count; sample += 4) {
+  size_t sample = 0;
+  for (; sample + 4 <= ch_sample_count; sample += 4) {
     const uint8_t* in_bytes = reinterpret_cast<const uint8_t*>(input);
     auto load_swap = [&](size_t channel) {
       const uint8x16_t raw = vld1q_u8(
@@ -160,6 +160,24 @@ inline void sequential_6_BE_to_interleaved_2_LE(float* output,
     const float32x4x2_t zipped = vzipq_f32(left, right);
     vst1q_f32(&output[sample * 2], zipped.val[0]);
     vst1q_f32(&output[(sample + 2) * 2], zipped.val[1]);
+  }
+  // Samples past the last group of four (none for the 256-sample frames the
+  // driver passes) get the same mix one at a time. One operation per statement
+  // keeps the compiler from fusing a multiply and add the vector path doesn't.
+  for (; sample < ch_sample_count; sample++) {
+    auto in = [&](size_t channel) {
+      return xe::byte_swap(input[channel * ch_sample_count + sample]);
+    };
+    const float fc_mix = in(2) * 0.707106781f;
+    const float lfe_mix = in(3) * 0.5f;
+    const float bl_mix = in(4) * 0.707106781f;
+    const float br_mix = in(5) * 0.707106781f;
+    const float left_rest = bl_mix + lfe_mix;
+    const float right_rest = br_mix + lfe_mix;
+    const float left_center = fc_mix + left_rest;
+    const float right_center = fc_mix + right_rest;
+    output[sample * 2] = in(0) + left_center;
+    output[sample * 2 + 1] = in(1) + right_center;
   }
 }
 #else
