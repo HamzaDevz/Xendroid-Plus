@@ -84,6 +84,12 @@ uint32_t TransferBlock(Block* block, uint32_t live, bool apply,
           live &= ~mask;
         }
       }
+    } else if (num == OPCODE_CHECK_PREEMPT) {
+      // VOLATILE, but a fiber switch reads none of this thread's CR: only a
+      // debugger or GetThreadContext on the parked thread could see a field
+      // whose store a later one makes dead. The guest scheduler (on by
+      // default) puts one at every loop head, where reading all CR kept every
+      // CR store of the loop.
     } else if (i->opcode->flags & OPCODE_FLAG_VOLATILE) {
       // Calls included: guest code need not follow the ABI's volatile fields.
       live = kAllCR;
