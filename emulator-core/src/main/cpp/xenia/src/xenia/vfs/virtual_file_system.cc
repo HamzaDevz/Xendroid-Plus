@@ -284,6 +284,9 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
   // TODO(gibbed): should 'is_directory' remain as a bool or should it be
   // flipped to a generic FileAttributeFlags?
 
+  // Early failures leave it as it is, and NtCreateFile passes it to the guest.
+  *out_action = FileAction::kDoesNotExist;
+
   // Cleanup access.
   if (desired_access & FileAccess::kGenericRead) {
     desired_access |= FileAccess::kFileReadData;
@@ -353,8 +356,10 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
 
   // Its deletion waits for the last handle to close (see
   // HostPathEntry::ReleaseFile). NT refuses to open it until then, and an
-  // overwrite here would write contents that the last close deletes.
-  if (entry && entry->delete_on_close()) {
+  // overwrite here would write contents that the last close deletes. Entries
+  // that count no handles (packages, discs) never carry the mark out, so it
+  // only counts while handles are open.
+  if (entry && entry->delete_on_close() && entry->has_open_files()) {
     return X_STATUS_DELETE_PENDING;
   }
 
