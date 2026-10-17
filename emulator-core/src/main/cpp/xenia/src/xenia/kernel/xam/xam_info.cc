@@ -310,7 +310,8 @@ dword_result_t XamLoaderGetLaunchData_entry(lpvoid_t buffer_ptr,
 DECLARE_XAM_EXPORT1(XamLoaderGetLaunchData, kNone, kSketchy);
 
 void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
-  auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
+  // Unowned, this frame never unwinds.
+  auto* xam = kernel_state()->GetKernelModule<XamModule>("xam.xex").get();
 
   auto& loader_data = xam->loader_data();
   loader_data.launch_flags = flags;
