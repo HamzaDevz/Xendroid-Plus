@@ -144,6 +144,20 @@ toolchain. The full setup for Linux and Windows hosts is in [BUILD.md](BUILD.md)
 - Frame generation, fonts, upscaling and the other third-party components keep their
   own licenses, listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
+## Releases
+
+Releases carry a [SemVer](https://semver.org) version:
+
+- **Stable** releases (`1.2.0`) are published by hand from `main`: Actions → Xendroid+ →
+  Run workflow, with `release` set to `patch` (fixes), `minor` (new features) or `major`
+  (a big change). The app's Stable update channel follows them, and their notes gather
+  everything since the previous stable release.
+- Every change merged into `main` publishes a **preview** of the next minor version
+  (`1.3.0-preview.88`, 88 being the build number), offered by the app's Preview channel.
+
+Release tags keep the `XenDroid-v<build>-<commit>` form the app's updater reads; stable
+releases also get a `v1.2.0` tag.
+
 ## License
 
 Xendroid+'s own code is Copyright (C) 2026 phforner0 and the Xendroid+ contributors,
