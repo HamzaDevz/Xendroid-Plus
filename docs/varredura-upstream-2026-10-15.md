@@ -223,13 +223,13 @@ O que a triagem e o porte deixaram passar, e como se confere agora:
   caso.
 
 O lote 4 virou o PR #44. Saíram dele `ac1ece3086`, `ddfe2b87f9` e `566a58ebf0`: a cripto do kernel
-reescrita sobre o Mbed TLS, que não está aqui. Os bugs que eles corrigem são reais:
+reescrita sobre o Mbed TLS, que não estava aqui. Os bugs que eles corrigem são reais:
 - o MD5 escreve além do estado do guest;
 - o SHA-512 devolve o digest errado;
 - o AES guarda as chaves de decifra na ordem errada e passa do fim do buffer num bloco parcial de
   CBC.
 
-Ficam para um PR próprio, com o Mbed TLS ou com correções sobre o código atual.
+Ficaram para um PR próprio, que virou o PR #45 (abaixo).
 
 Entrou a parte do `vec128.h` do `2a1097177`, um commit de x64 que a triagem deixou de fora: os
 construtores de `vec128` viram `constexpr`, e o `a5f59a48ae` precisa disso para compilar.
@@ -248,25 +248,44 @@ Fica para depois o `7347cd12e` (resolve com o comando de cópia 2). Sem ele, as 
 O lote 1 (PR #40) recebeu os commits de arquivos que tinham saído dele: `16ba848086`,
 `f5c8af81a5`, `2f6baa7514` e `d8e5dae74e`. Com o `d8e5dae74e`, uma entrada com handles abertos
 recusa ser apagada, por isso veio junto uma correção própria: sobrescrever um arquivo que outro
-handle mantém aberto o trunca no lugar, como no NT. A revisão achou mais oito problemas nesses
-commits ou expostos por eles, corrigidos no próprio lote:
+handle mantém aberto o trunca no lugar, como no NT. A revisão achou mais doze problemas nesses
+commits ou expostos por eles, corrigidos no próprio lote em dez commits. Os principais:
 - um device desmontado com handles abertos fica vivo até o último handle fechar;
-- o app não cai mais com um pacote que é um arquivo só (miniatura, diretório criado dentro dele);
+- o app não cai mais com um pacote guardado como um arquivo só (miniatura) nem ao criar um
+  diretório dentro de um pacote que o Xendroid+ mostra como arquivo;
 - abrir um arquivo com exclusão pendente devolve `STATUS_DELETE_PENDING`, como no NT;
+- sobrescrever um diretório não apaga mais a árvore inteira;
+- handles e arquivos que ficavam abertos por engano agora fecham;
 - o gerenciador de conteúdo, o instalador e a lixeira do app aceitam o pacote em arquivo.
+
+O resto ficou anotado no PR #40.
 
 A cripto do kernel virou o PR #45, que sai do lote 4 (#44). Ele traz:
 - o Mbed TLS 3.6.7 copiado para a árvore, só os fontes de cripto que o build usa;
-- os 11 commits da série do upstream, de `4101dfa07` a `ddfe2b87f9`;
+- os 11 commits da série do upstream, de `4101dfa07` a `ddfe2b87f9` (no upstream há dois
+  commits de fora da série entre eles, `6ffd0fe70` e `113837b0a`);
 - cinco correções próprias pedidas pela revisão:
-  - as tabelas do AES como dados constantes, porque a inicialização preguiçosa do Mbed TLS não
-    é segura entre threads em ARM64;
+  - as tabelas do AES como dados constantes: o Mbed TLS as monta na primeira chave atrás de uma
+    flag sem sincronização (em ARM64 outra thread pode ver a flag antes das tabelas), e o
+    `XeCryptAesEcb`/`Cbc` pode rodar sem que nenhuma chave as tenha montado;
   - limites no RSA e na compressão básica do XEX;
   - o link dos testes do kernel;
-  - a licença do Mbed TLS no app.
+  - a licença do Mbed TLS no app e nos avisos; o `aes_128` sai da página de licenças.
+
+Saves gravados por builds anteriores com HMAC incremental, SHA-512 ou bloco CBC parcial podem
+falhar na verificação do jogo.
 
 O lote 6 virou o PR #46, que sai de um merge dos lotes 2 e 4. Ele traz os 21 commits de
-desempenho, com o passe de stores de CR mortos e o XER[OV]/[SO] que tinham saído do lote 2.
+desempenho, com o passe de stores de CR mortos e o XER[OV]/[SO] que tinham saído do lote 2, e
+duas correções próprias.
+- **Diferença deliberada do upstream (`70a91c551`):** o passe de CR morto deixa passar o
+  `CHECK_PREEMPT`. Com o escalonador de fibras ligado (o padrão, aqui e no upstream), há um em
+  cada cabeça de laço, e o passe o tratava como leitura de todo o CR. Assim os stores de CR dos
+  laços ficavam, e com eles o custo do XER[SO]: só com essa regra o passe compensa esse custo
+  dentro de laços, como a tabela acima supõe. Um porte futuro do
+  `dead_cr_store_elimination_pass.cc` precisa manter a regra.
+- **Mixagem 5.1 → estéreo em NEON (`003912673`):** trata as amostras depois do último grupo de
+  quatro.
 - **Fusão de compare e desvio (`aba5703fa0`):** escrita para o emissor daqui, porque a
   infraestrutura de handoff do upstream não está aqui.
 - **Ficaram de fora:**
@@ -285,6 +304,4 @@ desempenho, com o passe de stores de CR mortos e o XER[OV]/[SO] que tinham saíd
 - **Série de NaN e FPSCR:** os fixups estão desligados no Xendroid+ (Talvez).
 - **UBO dinâmico incondicional** (`bfca9b2d97`): o Xendroid+ mediu que o driver proprietário da
   Qualcomm lê zeros por esses descritores e só o liga no Turnip (`d9816ebe9`).
-- **Cripto em Mbed TLS:** o upstream trocou a cripto inteira; aqui, corrigir sobre o que já
-  existe (K8).
 - **D3D12, Metal, backend x64, UI desktop e CI.**
