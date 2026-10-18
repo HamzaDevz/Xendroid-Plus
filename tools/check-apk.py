@@ -27,6 +27,7 @@ LICENSES = {
     "assets/engine-licenses/sgsr-BSD-3-Clause.txt",
     "assets/engine-licenses/winfg-MIT.txt",
     "assets/engine-licenses/winfg-third-party.txt",
+    "assets/engine-licenses/xendroid-AGPL-3.0.txt",
     "assets/engine-licenses/xendroid-notices.txt",
     "assets/font-licenses/Barlow-OFL.txt",
     "assets/font-licenses/JetBrainsMono-OFL.txt",
