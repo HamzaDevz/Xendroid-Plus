@@ -34,9 +34,8 @@
 #include "xenia/kernel/util/xex2_util.h"
 #include "xenia/kernel/xmodule.h"
 
-#include "third_party/crypto/TinySHA1.hpp"
-#include "third_party/crypto/rijndael-alg-fst.c"
-#include "third_party/crypto/rijndael-alg-fst.h"
+#include "third_party/mbedtls/include/mbedtls/aes.h"
+#include "third_party/mbedtls/include/mbedtls/sha1.h"
 #include "xenia/cpu/ppc/ppc_decode_data.h"
 #include "xenia/cpu/ppc/ppc_instr.h"
 DEFINE_bool(disable_instruction_infocache, false,
@@ -71,21 +70,14 @@ static constexpr uint8_t xe_xex2_devkit_key[16] = {
 void aes_decrypt_buffer(const uint8_t* session_key, const uint8_t* input_buffer,
                         const size_t input_size, uint8_t* output_buffer,
                         const size_t output_size) {
-  uint32_t rk[4 * (MAXNR + 1)];
+  mbedtls_aes_context context;
+  mbedtls_aes_init(&context);
+  mbedtls_aes_setkey_dec(&context, session_key, 128);
   uint8_t ivec[16] = {0};
-  int32_t Nr = rijndaelKeySetupDec(rk, session_key, 128);
-  const uint8_t* ct = input_buffer;
-  uint8_t* pt = output_buffer;
-  for (size_t n = 0; n < input_size; n += 16, ct += 16, pt += 16) {
-    // Decrypt 16 uint8_ts from input -> output.
-    rijndaelDecrypt(rk, Nr, ct, pt);
-    for (size_t i = 0; i < 16; i++) {
-      // XOR with previous.
-      pt[i] ^= ivec[i];
-      // Set previous.
-      ivec[i] = ct[i];
-    }
-  }
+  mbedtls_aes_crypt_cbc(&context, MBEDTLS_AES_DECRYPT,
+                        std::min(input_size, output_size) & ~size_t(15), ivec,
+                        input_buffer, output_buffer);
+  mbedtls_aes_free(&context);
 }
 
 namespace xe {
@@ -425,15 +417,12 @@ int XexModule::ApplyPatch(XexModule* module) {
   }
 
   uint8_t digest[0x14];
-  sha1::SHA1 s;
   // Now loop through each block and apply the delta patches inside
   while (cur_block->block_size) {
     const auto* next_block = (const xex2_compressed_block_info*)p;
 
     // Compare block hash, if no match we probably used wrong decrypt key
-    s.reset();
-    s.processBytes(p, cur_block->block_size);
-    s.finalize(digest);
+    mbedtls_sha1(p, cur_block->block_size, digest);
 
     if (memcmp(digest, cur_block->block_hash, 0x14) != 0) {
       result_code = 9;
@@ -602,6 +591,17 @@ int XexModule::ReadImageBasicCompressed(const void* xex_addr,
   uint32_t uncompressed_size = 0;
 
   auto* file_info = opt_file_format_info();
+  // The block list comes from the file and must lie inside the header that was
+  // read, or both loops below read past it.
+  const uintptr_t header_begin = uintptr_t(xex_header_mem_.data());
+  const uintptr_t header_end = header_begin + xex_header_mem_.size();
+  const uintptr_t info_begin = uintptr_t(file_info);
+  if (!file_info || info_begin < header_begin || info_begin > header_end ||
+      header_end - info_begin < 8 || file_info->info_size < 8 ||
+      file_info->info_size > header_end - info_begin) {
+    XELOGE("XEX: the basic compression block list is outside the header");
+    return 1;
+  }
   auto& comp_info = file_info->compression_info.basic;
 
   uint32_t block_count = (file_info->info_size - 8) / 8;
@@ -636,13 +636,30 @@ int XexModule::ReadImageBasicCompressed(const void* xex_addr,
   std::memset(buffer, 0, total_size);  // Quickly zero the contents.
   uint8_t* d = buffer;
 
-  uint32_t rk[4 * (MAXNR + 1)];
+  mbedtls_aes_context context;
+  mbedtls_aes_init(&context);
+  mbedtls_aes_setkey_dec(&context, session_key_, 128);
   uint8_t ivec[16] = {0};
-  int32_t Nr = rijndaelKeySetupDec(rk, session_key_, 128);
 
   for (size_t n = 0; n < block_count; n++) {
     const uint32_t data_size = comp_info.blocks[n].data_size;
     const uint32_t zero_size = comp_info.blocks[n].zero_size;
+
+    // A block must fit what was allocated and what is left of the file, or a
+    // crafted header reads and writes past them - the library scan loads the
+    // XEX of every game it lists. A block of zeros only writes nothing.
+    const size_t written = size_t(d - buffer);
+    const size_t consumed = size_t(p - source_buffer);
+    if (consumed > exe_length || data_size > exe_length - consumed ||
+        (data_size &&
+         (written > total_size || data_size > total_size - written))) {
+      XELOGE(
+          "XEX: basic compression block {} does not fit: {} bytes at {} of a "
+          "{}-byte image, {} of a {}-byte file",
+          n, data_size, written, total_size, consumed, exe_length);
+      mbedtls_aes_free(&context);
+      return 1;
+    }
 
     switch (opt_file_format_info()->encryption_type) {
       case XEX_ENCRYPTION_NONE:
@@ -652,20 +669,10 @@ int XexModule::ReadImageBasicCompressed(const void* xex_addr,
         }
         memcpy(d, p, data_size);
         break;
-      case XEX_ENCRYPTION_NORMAL: {
-        const uint8_t* ct = p;
-        uint8_t* pt = d;
-        for (size_t m = 0; m < data_size; m += 16, ct += 16, pt += 16) {
-          // Decrypt 16 uint8_ts from input -> output.
-          rijndaelDecrypt(rk, Nr, ct, pt);
-          for (size_t i = 0; i < 16; i++) {
-            // XOR with previous.
-            pt[i] ^= ivec[i];
-            // Set previous.
-            ivec[i] = ct[i];
-          }
-        }
-      } break;
+      case XEX_ENCRYPTION_NORMAL:
+        mbedtls_aes_crypt_cbc(&context, MBEDTLS_AES_DECRYPT, data_size & ~15u,
+                              ivec, p, d);
+        break;
       default:
         assert_always();
         return 1;
@@ -675,6 +682,7 @@ int XexModule::ReadImageBasicCompressed(const void* xex_addr,
     d += data_size + zero_size;
   }
 
+  mbedtls_aes_free(&context);
   return 0;
 }
 
@@ -695,7 +703,6 @@ int XexModule::ReadImageCompressed(const void* xex_addr, size_t xex_length) {
   uint8_t* compress_buffer = NULL;
   const uint8_t* p = NULL;
   uint8_t* d = NULL;
-  sha1::SHA1 s;
 
   // Decrypt (if needed).
   bool free_input = false;
@@ -736,9 +743,7 @@ int XexModule::ReadImageCompressed(const void* xex_addr, size_t xex_length) {
     const auto* next_block = (const xex2_compressed_block_info*)p;
 
     // Compare block hash, if no match we probably used wrong decrypt key
-    s.reset();
-    s.processBytes(p, cur_block->block_size);
-    s.finalize(block_calced_digest);
+    mbedtls_sha1(p, cur_block->block_size, block_calced_digest);
     if (memcmp(block_calced_digest, cur_block->block_hash, 0x14) != 0) {
       result_code = 2;
       break;
@@ -1104,15 +1109,10 @@ bool XexModule::LoadContinue() {
 }
 
 void XexModule::Precompile() {
-  sha1::SHA1 final_image_sha_;
-
-  final_image_sha_.reset();
-
   unsigned high_code = this->high_address_ - this->low_address_;
 
-  final_image_sha_.processBytes(memory()->TranslateVirtual(this->low_address_),
-                                high_code);
-  final_image_sha_.finalize(image_sha_bytes_);
+  mbedtls_sha1(memory()->TranslateVirtual(this->low_address_), high_code,
+               image_sha_bytes_);
 
   image_sha_str_.clear();
   for (unsigned i = 0; i < sizeof(image_sha_bytes_); ++i) {
