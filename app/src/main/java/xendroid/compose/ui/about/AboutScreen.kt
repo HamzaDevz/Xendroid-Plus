@@ -1,6 +1,10 @@
 package xendroid.compose.ui.about
 
+import android.content.Intent
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -138,11 +142,42 @@ fun AboutScreen(
         }
     }
 
-    if (showLicenses) XdSheet(onDismiss = { showLicenses = false }, title = stringResource(R.string.ab_licenses), wide = true, actions = {
-        XdButton(stringResource(R.string.common_ok), { showLicenses = false }, kind = XdButtonKind.PRIMARY)
-    }) {
-        AndroidView(factory = { ctx -> WebView(ctx).apply { loadUrl("file:///android_asset/licenses.html") } },
-            modifier = Modifier.fillMaxWidth().height(380.dp))
+    if (showLicenses) {
+        var licenseView by remember { mutableStateOf<WebView?>(null) }
+        var inText by remember { mutableStateOf(false) }   // a license text, not the list
+        XdSheet(onDismiss = { showLicenses = false }, title = stringResource(R.string.ab_licenses), wide = true, actions = {
+            if (inText) XdButton(stringResource(R.string.common_back), { licenseView?.goBack() })
+            XdButton(stringResource(R.string.common_ok), { showLicenses = false }, kind = XdButtonKind.PRIMARY)
+        }) {
+            BackHandler(enabled = inText) { licenseView?.goBack() }
+            AndroidView(factory = { ctx ->
+                WebView(ctx).apply {
+                    webViewClient = LicensesClient { inText = it }
+                    loadUrl("file:///android_asset/licenses.html")
+                    licenseView = this
+                }
+            }, modifier = Modifier.fillMaxWidth().height(380.dp), onRelease = { it.destroy() })
+        }
+    }
+}
+
+/**
+ * Opens the bundled license texts (engine-licenses/…) in the page and web links in the browser,
+ * as the WebView does with no client, and says through [onText] whether a text is showing, so
+ * Back returns to the list: with no client, closing the sheet was the only way out of a text.
+ */
+private class LicensesClient(private val onText: (Boolean) -> Unit) : WebViewClient() {
+    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+        val url = request.url
+        if (url.scheme == "file") return !url.path.orEmpty().startsWith("/android_asset/")
+        if (url.scheme == "http" || url.scheme == "https") runCatching {
+            view.context.startActivity(Intent(Intent.ACTION_VIEW, url).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+        return true
+    }
+
+    override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+        onText(view.canGoBack())
     }
 }
 
