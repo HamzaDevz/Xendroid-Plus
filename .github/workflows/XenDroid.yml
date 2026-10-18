@@ -50,12 +50,22 @@ on:
         type: choice
         options: [test, regular]
         default: test
+      release:
+        description: >-
+          Publish a stable release from main, the next version after the newest
+          one (tools/release_version.py; the package is then the regular one).
+          none: only build.
+        type: choice
+        options: [none, patch, minor, major]
+        default: none
 
 permissions:
   contents: read
 
 concurrency:
-  group: xendroid-${{ github.event.pull_request.number || github.ref }}
+  # Manual runs (stable releases) get their own group: a merge queued behind one
+  # must not replace it.
+  group: xendroid-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
   # A new push to a pull request replaces its running build; main builds
   # (releases) always finish.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -84,6 +94,9 @@ jobs:
     outputs:
       sha: ${{ steps.cfg.outputs.sha }}
       name: ${{ steps.cfg.outputs.name }}
+      channel: ${{ steps.version.outputs.channel }}
+      version: ${{ steps.version.outputs.version }}
+      previous_stable: ${{ steps.version.outputs.previous_stable }}
       apk: ${{ steps.sign.outputs.apk }}
       signed_with: ${{ steps.sign.outputs.signed_with }}
 
@@ -97,11 +110,13 @@ jobs:
       id: cfg
       env:
         INPUT_PACKAGE: ${{ inputs.package }}
+        INPUT_RELEASE: ${{ inputs.release }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
         sha=$(git rev-parse --short=8 HEAD)
-        if [ "$GITHUB_EVENT_NAME" = push ] || [ "$INPUT_PACKAGE" = regular ]; then
+        if [ "$GITHUB_EVENT_NAME" = push ] || [ "$INPUT_PACKAGE" = regular ] ||
+           { [ -n "$INPUT_RELEASE" ] && [ "$INPUT_RELEASE" != none ]; }; then
           variant=regular
           name="XenDroid_Release_$sha"
           package=xendroid.compose.fork
@@ -128,6 +143,15 @@ jobs:
         apt-get update -qq
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
           ninja-build python3 glslang-tools spirv-tools ccache
+
+    # SemVer from the releases: a stable version on a manual run with a bump, a
+    # preview of the next minor on a push to main, the commit otherwise.
+    - name: Version
+      id: version
+      env:
+        GH_TOKEN: ${{ github.token }}
+        INPUT_RELEASE: ${{ inputs.release }}
+      run: python3 tools/release_version.py >> "$GITHUB_OUTPUT"
 
     - name: Set up Gradle
       uses: gradle/actions/setup-gradle@v4
@@ -163,14 +187,17 @@ jobs:
       env:
         SHA: ${{ steps.cfg.outputs.sha }}
         PACKAGE_ARGS: ${{ steps.cfg.outputs.package_args }}
+        VERSION: ${{ steps.version.outputs.version }}
       run: |
         chmod +x gradlew
         # PACKAGE_ARGS holds several arguments (unquoted on purpose).
         # The run number orders builds for the in-app updater (versionCode); the
-        # release tag below carries the same number.
+        # release tag below carries the same number. VERSION (SemVer) is the
+        # versionName of published builds; the others keep the commit.
         ./gradlew --console=plain --build-cache --parallel \
           -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8" \
-          -PgitHash="$SHA" -PxendroidVersionCode="$GITHUB_RUN_NUMBER" $PACKAGE_ARGS :app:assembleRelease
+          -PgitHash="$SHA" -PxendroidVersionCode="$GITHUB_RUN_NUMBER" \
+          ${VERSION:+-PxendroidVersionName="$VERSION"} $PACKAGE_ARGS :app:assembleRelease
         ccache -s || true
         df -h "$GITHUB_WORKSPACE" || true
 
@@ -253,8 +280,11 @@ jobs:
   release:
     name: GitHub release
     needs: apk
+    # A preview for every push to main, a stable release for a manual run with a
+    # bump (tools/release_version.py), always signed with the release key.
     if: >-
-      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      github.ref == 'refs/heads/main' &&
+      (needs.apk.outputs.channel == 'preview' || needs.apk.outputs.channel == 'stable') &&
       needs.apk.outputs.signed_with == 'release'
     runs-on: ubuntu-24.04
     permissions:
@@ -283,9 +313,13 @@ jobs:
         GH_TOKEN: ${{ github.token }}
         TAG: XenDroid-v${{ github.run_number }}-${{ needs.apk.outputs.sha }}
         APK: ${{ needs.apk.outputs.apk }}
+        # A stable release gathers the notes since the previous stable one; a
+        # preview, since the newest release.
+        PREVIOUS: ${{ needs.apk.outputs.channel == 'stable' && needs.apk.outputs.previous_stable || '' }}
       run: |
         if python3 tools/release_notes.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" \
             --sha "$GITHUB_SHA" --build "$GITHUB_RUN_NUMBER" --apk "$APK" \
+            ${PREVIOUS:+--previous "$PREVIOUS"} \
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             > "$RUNNER_TEMP/release-notes.md"; then
           echo "path=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_OUTPUT"
@@ -297,10 +331,23 @@ jobs:
     - name: Create GitHub release
       uses: softprops/action-gh-release@v2
       with:
-        # XenDroid-v<versionCode>-<sha>: parsed by updater/ReleaseTags.kt.
+        # XenDroid-v<versionCode>-<sha>: parsed by updater/ReleaseTags.kt of the
+        # installed apps, so it keeps this form; the version is in the name.
         tag_name: XenDroid-v${{ github.run_number }}-${{ needs.apk.outputs.sha }}
-        name: Xendroid+ ${{ needs.apk.outputs.sha }} (build ${{ github.run_number }})
+        name: Xendroid+ ${{ needs.apk.outputs.version }}
+        # Previews reach the app's Preview channel only; Stable follows the rest.
+        prerelease: ${{ needs.apk.outputs.channel == 'preview' }}
+        make_latest: ${{ needs.apk.outputs.channel == 'stable' && 'true' || 'false' }}
         target_commitish: ${{ github.sha }}
         body_path: ${{ steps.notes.outputs.path }}
         generate_release_notes: ${{ steps.notes.outputs.path == '' }}
         files: ${{ needs.apk.outputs.apk }}
+
+    # vX.Y.Z on the released commit, for people and git; the updater reads the
+    # release tag above.
+    - name: Version tag
+      if: needs.apk.outputs.channel == 'stable'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ needs.apk.outputs.version }}
+      run: gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$GITHUB_SHA" --silent

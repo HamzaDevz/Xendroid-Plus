@@ -37,7 +37,9 @@ def gitHeadCommit = {
 }
 def buildBaseCommit = buildIdentity.getProperty('base') ?: (project.findProperty('gitHash') ?: gitHeadCommit() ?: 'unknown')
 def buildChangeset = buildIdentity.getProperty('changeset') ?: (buildIdentityFile.isFile() ? '' : 'unknown')
-def buildVersionName = project.findProperty('gitHash') ?:
+// Published builds get their SemVer from CI (tools/release_version.py: "1.2.0", or
+// "1.3.0-preview.88"); the others are named after their commit.
+def buildVersionName = project.findProperty('xendroidVersionName') ?: project.findProperty('gitHash') ?:
     (buildChangeset ? "${buildBaseCommit}+local.${buildChangeset}" : buildBaseCommit)
 
 def engineLicensesDir = layout.buildDirectory.dir('generated/engineLicenseAssets')

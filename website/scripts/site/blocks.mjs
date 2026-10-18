@@ -153,13 +153,13 @@ ${raw(list.map(s => settingBlock(L, s, c)).join(''))}`;
         const sum = releaseSummary(r.body, id);
         const rid = `build-${r.build ?? r.tag.toLowerCase()}`;
         return html`<section class="release" aria-labelledby="${rid}">
-<h3 id="${rid}">${r.build != null ? `Build ${r.build}` : r.name} <a class="anchor" href="#${rid}" aria-label="${tx('Link to this version', 'Link para esta versão')}">#</a></h3>
+<h3 id="${rid}">${r.version ? `v${r.version}` : r.build != null ? `Build ${r.build}` : r.name} <a class="anchor" href="#${rid}" aria-label="${tx('Link to this version', 'Link para esta versão')}">#</a></h3>
 <p class="page-meta"><span>${L.date(r.publishedAt)}</span><span class="u-mono">${r.tagSha ? r.tagSha.slice(0, 8) : ''}</span>${r.apk ? html`<a href="${r.apk.url}">APK, ${L.bytes(r.apk.size)}</a>` : ''}<a href="${r.url}" rel="noopener">${tx('Full notes on GitHub', 'Notas completas no GitHub')}</a></p>
 ${sum.items.length ? html`<ul${sum.lang !== (id === 'en' ? 'en' : 'pt-BR') ? raw(` lang="${sum.lang}"`) : ''}>${sum.items.map(i => html`<li>${i}</li>`)}</ul>` : html`<p class="u-muted">${tx('No summary in the notes of this version.', 'Sem resumo nas notas desta versão.')}</p>`}
 ${id === 'pt' && sum.lang === 'en' ? html`<p class="u-muted" style="font-size:var(--step--1)">Resumo só em inglês nas notas desta versão.</p>` : ''}
 </section>`;
       });
-      return { html: out.join(''), headings: shown.map(r => ({ level: 3, id: `build-${r.build ?? r.tag.toLowerCase()}`, text: r.build != null ? `Build ${r.build}` : r.name })) };
+      return { html: out.join(''), headings: shown.map(r => ({ level: 3, id: `build-${r.build ?? r.tag.toLowerCase()}`, text: r.version ? `v${r.version}` : r.build != null ? `Build ${r.build}` : r.name })) };
     },
 
     'nao-lancado'() {

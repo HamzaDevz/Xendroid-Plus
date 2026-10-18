@@ -95,7 +95,7 @@ const st = data.stable;
 const v = {
   stable: st ? {
     build: st.build,
-    label: st.build != null ? `Build ${st.build}` : st.name,
+    label: st.version ? `v${st.version}` : st.build != null ? `Build ${st.build}` : st.name,
     tag: st.tag,
     date: st.publishedAt,
     commit: st.commit,
