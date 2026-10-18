@@ -338,9 +338,9 @@ X_STATUS XFile::SetLength(size_t length) {
   });
   return result;
 }
-X_STATUS XFile::Rename(const std::filesystem::path file_path) {
-  entry()->Rename(file_path);
-  return X_STATUS_SUCCESS;
+X_STATUS XFile::Rename(const std::filesystem::path file_path,
+                       bool replace_existing) {
+  return entry()->Rename(file_path, replace_existing);
 }
 
 void XFile::RegisterIOCompletionPort(uint32_t key,
