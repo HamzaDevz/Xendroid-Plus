@@ -8,6 +8,9 @@
  */
 
 #include "xenia/vfs/virtual_file_system.h"
+
+#include <cerrno>
+
 #include "xenia/kernel/xam/content_manager.h"
 #include "xenia/vfs/devices/xcontent_container_device.h"
 
@@ -494,7 +497,8 @@ X_STATUS VirtualFileSystem::ExtractContentFile(Entry* entry,
     std::error_code error_code;
     std::filesystem::create_directories(dest_name, error_code);
     if (error_code) {
-      return error_code.value();
+      XELOGE("Extracting {}: {}", entry->path(), error_code.message());
+      return X_STATUS_ACCESS_DENIED;
     }
     return 0;
   }
@@ -508,24 +512,38 @@ X_STATUS VirtualFileSystem::ExtractContentFile(Entry* entry,
   auto file = xe::filesystem::OpenFile(dest_name, "wb");
   if (!file) {
     in_file->Destroy();
-    return 1;
+    XELOGE("Extracting {}: cannot create {}", entry->path(),
+           xe::path_to_utf8(dest_name));
+    return X_STATUS_ACCESS_DENIED;
   }
   constexpr size_t write_buffer_size = 4_MiB;
 
-  if (entry->can_map()) {
+  // A package cut short reads nothing before the end (which used to loop
+  // forever), and a full disk writes short: either fails the file.
+  bool read_failed = false;
+  bool write_failed = false;
+  if (!entry->size()) {
+    // Nothing to copy (and nothing to map).
+  } else if (entry->can_map()) {
     auto map = entry->OpenMapped(xe::MappedMemory::Mode::kRead);
+    read_failed = !map;
 
-    size_t remaining_size = map->size();
+    size_t remaining_size = map ? map->size() : 0;
     size_t offset = 0;
 
     while (remaining_size > 0) {
       const auto bytes_to_read = std::min(write_buffer_size, remaining_size);
-      fwrite(map->data() + offset, bytes_to_read, 1, file);
+      if (fwrite(map->data() + offset, bytes_to_read, 1, file) != 1) {
+        write_failed = true;
+        break;
+      }
       offset += bytes_to_read;
       remaining_size -= bytes_to_read;
       progress += bytes_to_read;
     }
-    map->Close();
+    if (map) {
+      map->Close();
+    }
   } else {
     size_t remaining_size = entry->size();
     size_t offset = 0;
@@ -533,20 +551,42 @@ X_STATUS VirtualFileSystem::ExtractContentFile(Entry* entry,
 
     while (remaining_size > 0) {
       size_t bytes_read = 0;
-      in_file->ReadSync(std::span<uint8_t>(buffer, write_buffer_size), offset,
-                        &bytes_read);
-      fwrite(buffer, bytes_read, 1, file);
+      X_STATUS read_status = in_file->ReadSync(
+          std::span<uint8_t>(buffer, std::min(write_buffer_size, remaining_size)),
+          offset, &bytes_read);
+      if (XFAILED(read_status) || !bytes_read) {
+        read_failed = true;
+        break;
+      }
+      if (fwrite(buffer, bytes_read, 1, file) != 1) {
+        write_failed = true;
+        break;
+      }
       offset += bytes_read;
       remaining_size -= bytes_read;
       progress += bytes_read;
     }
   }
 
-  fclose(file);
+  int write_errno = write_failed ? errno : 0;
+  if (fclose(file) != 0 && !write_failed) {
+    write_failed = true;
+    write_errno = errno;
+  }
   in_file->Destroy();
 
   if (buffer) {
     delete[] buffer;
+  }
+  if (read_failed || write_failed) {
+    XELOGE("Extracting {}: the {} failed", entry->path(),
+           read_failed ? "read" : "write");
+    std::error_code remove_ec;
+    std::filesystem::remove(dest_name, remove_ec);
+    if (read_failed) {
+      return X_STATUS_INVALID_PARAMETER;
+    }
+    return write_errno == ENOSPC ? X_STATUS_DISK_FULL : X_STATUS_ACCESS_DENIED;
   }
   return 0;
 }
@@ -580,7 +620,10 @@ X_STATUS VirtualFileSystem::ExtractContentFiles(
       }
     }
 
-    ExtractContentFile(entry, base_path, progress);
+    X_STATUS status = ExtractContentFile(entry, base_path, progress);
+    if (status != X_STATUS_SUCCESS) {
+      return status;
+    }
   }
   return X_STATUS_SUCCESS;
 }
@@ -590,17 +633,21 @@ void VirtualFileSystem::ExtractContentHeader(Device* device,
   const XContentContainerDevice* xcontent_device =
       ((XContentContainerDevice*)device);
 
-  if (!std::filesystem::exists(base_path.parent_path())) {
-    if (!std::filesystem::create_directories(base_path.parent_path())) {
-      return;
-    }
+  // Not throwing: this runs for a title opening its content too.
+  std::error_code ec;
+  std::filesystem::create_directories(base_path.parent_path(), ec);
+  if (ec) {
+    return;
   }
   auto header_filename = base_path.filename().string() + ".header";
   auto header_path = base_path.parent_path() / header_filename;
   xe::filesystem::CreateEmptyFile(header_path);
 
-  if (std::filesystem::exists(header_path)) {
+  if (std::filesystem::exists(header_path, ec)) {
     auto file = xe::filesystem::OpenFile(header_path, "wb");
+    if (!file) {
+      return;
+    }
     kernel::xam::XCONTENT_AGGREGATE_DATA data =
         xcontent_device->content_header();
     uint32_t license_mask = xcontent_device->license_mask();
