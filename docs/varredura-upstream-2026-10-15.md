@@ -286,6 +286,9 @@ duas correções próprias.
   `dead_cr_store_elimination_pass.cc` precisa manter a regra.
 - **Mixagem 5.1 → estéreo em NEON (`003912673`):** trata as amostras depois do último grupo de
   quatro.
+- **A/B no POCO F7 (18/10):** Forza Horizon em jogo, no `.fork.ui`, quatro rodadas alternadas
+  contra o merge dos lotes 2 e 4. O lote tira 11,4% das instruções por quadro das threads do guest
+  e 7,7% das do processo inteiro, nos mesmos 30 fps e com o mesmo tempo de GPU.
 - **Fusão de compare e desvio (`aba5703fa0`):** escrita para o emissor daqui, porque a
   infraestrutura de handoff do upstream não está aqui.
 - **Ficaram de fora:**
