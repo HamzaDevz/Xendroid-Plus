@@ -7,7 +7,9 @@
  ******************************************************************************
  */
 
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/math.h"
 #include "xenia/kernel/info/file.h"
 #include "xenia/kernel/info/volume.h"
 #include "xenia/kernel/kernel_state.h"
@@ -261,11 +263,26 @@ dword_result_t NtSetInformationFile_entry(
     }
     case XFileAllocationInformation: {
       auto info = info_ptr.as<X_FILE_ALLOCATION_INFORMATION*>();
-      result = file->SetLength(info->allocation_size);
       out_length = sizeof(*info);
-
-      // Update the files vfs::Entry information
+      if (!(file->file_access() &
+            (xe::filesystem::FileAccess::kGenericWrite |
+             xe::filesystem::FileAccess::kFileWriteData))) {
+        result = X_STATUS_ACCESS_DENIED;
+        break;
+      }
+      // The allocation rounds up to whole allocation units. A larger one
+      // leaves the file size alone. A smaller one cuts the file to it.
+      auto device = file->device();
+      uint64_t allocation_size =
+          xe::round_up(uint64_t(info->allocation_size),
+                       uint64_t(device->sectors_per_allocation_unit()) *
+                           device->bytes_per_sector(),
+                       false);
       file->entry()->update();
+      if (allocation_size < file->entry()->size()) {
+        result = file->SetLength(allocation_size);
+        file->entry()->update();
+      }
       break;
     }
     case XFileEndOfFileInformation: {
