@@ -135,6 +135,19 @@ dword_result_t NtOpenFile_entry(
 }
 DECLARE_XBOXKRNL_EXPORT1(NtOpenFile, kFileSystem, kImplemented);
 
+// -1 reads from the file position, which a synchronous handle uses without an
+// offset or with FILE_USE_FILE_POINTER_POSITION (-2).
+static uint64_t ReadOffset(XFile* file, lpqword_t byte_offset_ptr) {
+  if (!byte_offset_ptr) {
+    return uint64_t(-1);
+  }
+  uint64_t byte_offset = *byte_offset_ptr;
+  if (byte_offset == uint64_t(-2) && file->is_synchronous()) {
+    return uint64_t(-1);
+  }
+  return byte_offset;
+}
+
 dword_result_t NtReadFile_entry(dword_t file_handle, dword_t event_handle,
                                 lpvoid_t apc_routine_ptr, lpvoid_t apc_context,
                                 pointer_t<X_IO_STATUS_BLOCK> io_status_block,
@@ -157,10 +170,9 @@ dword_result_t NtReadFile_entry(dword_t file_handle, dword_t event_handle,
     if (true || file->is_synchronous()) {
       // Synchronous.
       uint32_t bytes_read = 0;
-      result = file->Read(
-          buffer.guest_address(), buffer_length,
-          byte_offset_ptr ? static_cast<uint64_t>(*byte_offset_ptr) : -1,
-          &bytes_read, apc_context);
+      result = file->Read(buffer.guest_address(), buffer_length,
+                          ReadOffset(file.get(), byte_offset_ptr), &bytes_read,
+                          apc_context);
       if (io_status_block) {
         io_status_block->status = result;
         io_status_block->information = bytes_read;
@@ -249,10 +261,9 @@ dword_result_t NtReadFileScatter_entry(
     if (true || file->is_synchronous()) {
       // Synchronous.
       uint32_t bytes_read = 0;
-      result = file->ReadScatter(
-          segment_array.guest_address(), length,
-          byte_offset_ptr ? static_cast<uint64_t>(*byte_offset_ptr) : -1,
-          &bytes_read, apc_context);
+      result = file->ReadScatter(segment_array.guest_address(), length,
+                                 ReadOffset(file.get(), byte_offset_ptr),
+                                 &bytes_read, apc_context);
       if (io_status_block) {
         io_status_block->status = result;
         io_status_block->information = bytes_read;
