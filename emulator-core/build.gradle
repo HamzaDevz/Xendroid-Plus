@@ -46,8 +46,11 @@ android {
                               '-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=hwaddress',
                               '-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=hwaddress'
                 } else {
-                    cFlags '-O2', '-DNDEBUG', '-g', '-fno-strict-aliasing'
-                    cppFlags '-O2', '-DNDEBUG', '-g', '-fno-strict-aliasing'
+                    // XENDROID_DEBUG_INFO=-gline-tables-only: a build tree several GB smaller on
+                    // a full disk, and simpleperf still resolves functions and lines.
+                    def debugInfo = System.getenv('XENDROID_DEBUG_INFO') ?: '-g'
+                    cFlags '-O2', '-DNDEBUG', debugInfo, '-fno-strict-aliasing'
+                    cppFlags '-O2', '-DNDEBUG', debugInfo, '-fno-strict-aliasing'
                 }
                 if (System.getenv('USE_CCACHE') == 'true') {
                     arguments '-DCMAKE_C_COMPILER_LAUNCHER=ccache',
