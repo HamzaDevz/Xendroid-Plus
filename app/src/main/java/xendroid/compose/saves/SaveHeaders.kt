@@ -59,7 +59,8 @@ object SaveHeaders {
         val saves = ArchiveFiles.resolve(contentRoot, "$id/$tid/$SAVE_TYPE")
         if (!saves.isDirectory) return emptyList()
         val headers = ArchiveFiles.resolve(contentRoot, "$id/$tid/Headers/$SAVE_TYPE")
-        return saves.listFiles().orEmpty().filter { it.isDirectory }.take(MAX_PACKAGES).map { pkg ->
+        // .xd-* is what a save unpack in the core cut short leaves.
+        return saves.listFiles().orEmpty().filter { it.isDirectory && !it.name.startsWith(".xd-") }.take(MAX_PACKAGES).map { pkg ->
             val files = pkg.walkTopDown().maxDepth(16).filter { it.isFile }.toList()
             val header = File(headers, "${pkg.name}.header").takeIf { it.isFile && it.length() in HEADER_SIZE.toLong()..4096L }
             val name = header?.let { runCatching { displayName(it.readBytes()) }.getOrNull() }
