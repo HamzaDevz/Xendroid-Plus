@@ -10,6 +10,7 @@
 #include "xenia/cpu/backend/a64/a64_emitter.h"
 
 #include <cstring>
+#include <unordered_set>
 
 #include "xenia/base/debugging.h"
 #include "xenia/base/logging.h"
@@ -617,20 +618,24 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
       Label external_target;
       Label indirection_ready;
 
-      mov(x14, code_cache_->indirection_table_base_bias());
+      ldr(x14, ptr(x19, static_cast<uint32_t>(offsetof(
+                            A64BackendContext, indirection_table_base_bias))));
       add(x14, x14, w16, UXTW);
       ldr(w9, ptr(x14, static_cast<uint32_t>(0)));
       tbnz(w9, 31, external_target);
 
       // Internal: rel32 from code cache base.
-      mov(x14, code_cache_->execute_base_address());
+      ldr(x14, ptr(x19, static_cast<uint32_t>(offsetof(
+                            A64BackendContext, code_cache_execute_base))));
       add(x9, x14, w9, UXTW);
       b(indirection_ready);
 
       // External: tagged index into the side table.
       L(external_target);
       and_(w15, w9, A64CodeCache::kIndirectionExternalIndexMask);
-      mov(x14, code_cache_->external_indirection_table_base_address());
+      ldr(x14,
+          ptr(x19, static_cast<uint32_t>(offsetof(
+                       A64BackendContext, external_indirection_table_base))));
       lsl(x15, x15, 3);
       add(x14, x14, x15);
       ldr(x9, ptr(x14, static_cast<uint32_t>(0)));
@@ -691,20 +696,24 @@ void A64Emitter::CallIndirect(const hir::Instr* instr, int reg_index) {
       Label external_target;
       Label indirection_ready;
 
-      mov(x14, code_cache_->indirection_table_base_bias());
+      ldr(x14, ptr(x19, static_cast<uint32_t>(offsetof(
+                            A64BackendContext, indirection_table_base_bias))));
       add(x14, x14, w16, UXTW);
       ldr(w9, ptr(x14, static_cast<uint32_t>(0)));
       tbnz(w9, 31, external_target);
 
       // Internal: rel32 from code cache base.
-      mov(x14, code_cache_->execute_base_address());
+      ldr(x14, ptr(x19, static_cast<uint32_t>(offsetof(
+                            A64BackendContext, code_cache_execute_base))));
       add(x9, x14, w9, UXTW);
       b(indirection_ready);
 
       // External: tagged index into the side table.
       L(external_target);
       and_(w15, w9, A64CodeCache::kIndirectionExternalIndexMask);
-      mov(x14, code_cache_->external_indirection_table_base_address());
+      ldr(x14,
+          ptr(x19, static_cast<uint32_t>(offsetof(
+                       A64BackendContext, external_indirection_table_base))));
       lsl(x15, x15, 3);
       add(x14, x14, x15);
       ldr(x9, ptr(x14, static_cast<uint32_t>(0)));
@@ -741,8 +750,40 @@ void A64Emitter::CallIndirect(const hir::Instr* instr, int reg_index) {
   }
 }
 
+// Whether a float or vector value defined before `call` is read after it.
+// Registers hold values only within a block, so only this block can. False
+// for CALL_EXTERN as it ends its block; this guards one that wouldn't.
+static bool FpValueLiveAcross(const hir::Instr* call) {
+  const auto is_fp = [](const hir::Value* v) {
+    return v->type == hir::FLOAT32_TYPE || v->type == hir::FLOAT64_TYPE ||
+           v->type == hir::VEC128_TYPE;
+  };
+  std::unordered_set<const hir::Value*> before;
+  for (const hir::Instr* i = call->block->instr_head; i != call; i = i->next) {
+    if (i->dest && is_fp(i->dest)) {
+      before.insert(i->dest);
+    }
+  }
+  if (before.empty()) {
+    return false;
+  }
+  bool live = false;
+  for (hir::Instr* i = call->next; i && !live; i = i->next) {
+    i->VisitValueOperands(
+        [&](hir::Value* v, uint32_t) { live |= before.count(v) != 0; });
+  }
+  return live;
+}
+
 void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
   ForgetFpcrMode();
+  // The no-vec thunk skips the q4-q31 save, which is right as long as no value
+  // lives in a vector register across the call (the thunk addresses are in
+  // the backend context: one ldr each).
+  const uint32_t thunk_offset = static_cast<uint32_t>(
+      FpValueLiveAcross(instr)
+          ? offsetof(A64BackendContext, guest_to_host_thunk_address)
+          : offsetof(A64BackendContext, guest_to_host_thunk_no_vec_address));
   bool undefined = true;
   if (function->behavior() == Function::Behavior::kBuiltin) {
     auto builtin_function = static_cast<const BuiltinFunction*>(function);
@@ -753,7 +794,7 @@ void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
       mov(x0, reinterpret_cast<uint64_t>(builtin_function->handler()));
       mov(x1, reinterpret_cast<uint64_t>(builtin_function->arg0()));
       mov(x2, reinterpret_cast<uint64_t>(builtin_function->arg1()));
-      mov(x9, reinterpret_cast<uint64_t>(backend()->guest_to_host_thunk()));
+      ldr(x9, ptr(x19, thunk_offset));
       blr(x9);
     }
   } else if (function->behavior() == Function::Behavior::kExtern) {
@@ -764,7 +805,7 @@ void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
       mov(x0, reinterpret_cast<uint64_t>(extern_function->extern_handler()));
       ldr(x1, ptr(GetContextReg(), static_cast<int32_t>(offsetof(
                                        ppc::PPCContext, kernel_state))));
-      mov(x9, reinterpret_cast<uint64_t>(backend()->guest_to_host_thunk()));
+      ldr(x9, ptr(x19, thunk_offset));
       blr(x9);
     }
   }
@@ -782,7 +823,8 @@ void A64Emitter::CallNativeSafe(void* fn) {
   // GuestToHostThunk: x0=target function, x1/x2=args (set by caller).
   // The thunk rearranges: saves x0 in x9, sets x0=context, calls x9.
   mov(x0, reinterpret_cast<uint64_t>(fn));
-  mov(x9, reinterpret_cast<uint64_t>(backend()->guest_to_host_thunk()));
+  ldr(x9, ptr(x19, static_cast<uint32_t>(offsetof(
+                       A64BackendContext, guest_to_host_thunk_address))));
   blr(x9);
 }
 
@@ -871,7 +913,8 @@ void A64Emitter::EmitPreemptCheck(uint32_t guest_address) {
           reinterpret_cast<uint64_t>(&xe::cpu::backend::preempt_yield_handler));
     e.ldr(e.x0, ptr(e.x0));
     e.cbz(e.x0, after);
-    e.mov(e.x9, reinterpret_cast<uint64_t>(e.backend()->guest_to_host_thunk()));
+    e.ldr(e.x9, ptr(e.x19, static_cast<uint32_t>(offsetof(
+                               A64BackendContext, guest_to_host_thunk_address))));
     e.blr(e.x9);
     e.b(after);
   });
