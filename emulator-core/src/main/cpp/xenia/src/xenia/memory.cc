@@ -3056,6 +3056,13 @@ bool PhysicalHeap::Protect(uint32_t address, uint32_t size, uint32_t protect,
   return BaseHeap::Protect(address, size, protect);
 }
 
+bool PhysicalHeap::IsRangeUnallocated(uint32_t address, uint32_t size) {
+  if (!BaseHeap::IsRangeUnallocated(address, size)) {
+    return false;
+  }
+  return parent_heap_->IsRangeUnallocated(GetPhysicalAddress(address), size);
+}
+
 void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address,
                                          uint32_t length,
                                          bool enable_invalidation_notifications,
