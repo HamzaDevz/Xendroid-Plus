@@ -835,12 +835,15 @@ X_RESULT KernelState::ApplyTitleUpdate(
     return X_STATUS_UNSUCCESSFUL;
   }
 
-  X_STATUS result =
+  // ApplyPatch fails with small positive codes, which XFAILED takes for
+  // success: the title would run with its module partly patched.
+  const int result =
       patch_module->xex_module()->ApplyPatch(title_module->xex_module());
-  if (result != X_STATUS_SUCCESS) {
+  if (result) {
     XELOGE("Failed to apply XEX patch, code: {}", result);
+    return X_STATUS_UNSUCCESSFUL;
   }
-  return result;
+  return X_STATUS_SUCCESS;
 }
 
 void KernelState::UnloadUserModule(const object_ref<UserModule>& module,

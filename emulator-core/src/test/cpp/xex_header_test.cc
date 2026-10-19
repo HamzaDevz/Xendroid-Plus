@@ -1,7 +1,8 @@
 // The XEX header bounds (xenia/kernel/util/xex2_util.h, XexHeaderProblem): the
 // loader and the library scan read the optional headers and the security info by
 // the counts and offsets in the file, so a header that sends any of them outside
-// itself is refused before they are read.
+// itself is refused before they are read. Likewise the delta patch records of a
+// title update (XexDeltaPatchProblem), before any of them is applied.
 
 #include <cstdint>
 #include <cstdio>
@@ -53,6 +54,42 @@ std::vector<uint8_t> GoodXex() {
 
 const char* Problem(const std::vector<uint8_t>& file, size_t length = 0) {
   return xe::XexHeaderProblem(file.data(), length ? length : file.size());
+}
+
+void put16(std::vector<uint8_t>& file, size_t at, uint16_t value) {
+  file[at] = uint8_t(value >> 8);
+  file[at + 1] = uint8_t(value);
+}
+
+// A delta patch record: old_addr, new_addr, uncompressed_len, compressed_len,
+// then compressed_len bytes of data when that is over 1.
+void Record(std::vector<uint8_t>& patch, uint32_t old_addr, uint32_t new_addr,
+            uint16_t size, uint16_t compressed) {
+  const size_t at = patch.size();
+  patch.resize(at + 12 + (compressed > 1 ? compressed : 0), 0xA5);
+  put32(patch, at, old_addr);
+  put32(patch, at + 4, new_addr);
+  put16(patch, at + 8, size);
+  put16(patch, at + 10, compressed);
+}
+
+constexpr size_t kDest = 0x100;
+constexpr uint32_t kWindow = 0x8000;
+
+const char* PatchProblem(const std::vector<uint8_t>& patch,
+                         uint32_t window_size = kWindow) {
+  return xe::XexDeltaPatchProblem(patch.data(), patch.size(), kDest,
+                                  window_size);
+}
+
+// Fill, copy and LZX records inside a 0x100-byte destination, then the end.
+std::vector<uint8_t> GoodPatch() {
+  std::vector<uint8_t> patch;
+  Record(patch, 0xFFFFFFFF, 0x10, 0x20, 0);  // a fill reads nothing
+  Record(patch, 0x00, 0x40, 0x10, 1);
+  Record(patch, 0x80, 0xC0, 0x40, 6);
+  Record(patch, 0, 0, 0, 0);
+  return patch;
 }
 
 }  // namespace
@@ -119,6 +156,52 @@ int main() {
   expect(!Problem(file), "a well-formed XEX1 header passes");
   put32(file, kSecurity + xex1_count, 0x100000);
   expect(Problem(file), "XEX1 page descriptors past the header are refused");
+
+  auto patch = GoodPatch();
+  expect(!PatchProblem(patch), "delta records inside the destination pass");
+  patch.resize(patch.size() - 12);
+  expect(!PatchProblem(patch), "the records may end with the patch");
+  patch.resize(patch.size() + 7, 0xEE);
+  expect(!PatchProblem(patch), "a tail too short for a record ends them");
+
+  patch = GoodPatch();
+  put32(patch, 4, 0xF0);
+  expect(PatchProblem(patch), "a fill past the destination is refused");
+  put32(patch, 4, 0xFFFFFFF0);
+  expect(PatchProblem(patch), "a write that wraps 32 bits is refused");
+
+  patch = GoodPatch();
+  put32(patch, 12, 0xF8);
+  expect(PatchProblem(patch), "a copy from past the destination is refused");
+  put32(patch, 12, 0);
+  put32(patch, 16, 0xF8);
+  expect(PatchProblem(patch), "a copy to past the destination is refused");
+
+  patch = GoodPatch();
+  put32(patch, 24, 0xD0);
+  expect(PatchProblem(patch), "LZX data whose window is past the destination is refused");
+  patch = GoodPatch();
+  put16(patch, 34, 0x40);
+  expect(PatchProblem(patch), "LZX data past the patch is refused");
+  expect(!xe::XexDeltaPatchProblem(patch.data(), 30, kDest, kWindow),
+         "a record cut short by the patch's end ends them");
+
+  // LZX makes its window 1 << n bytes, from the lowest bit set, and the data a
+  // record reads goes at its end.
+  patch = GoodPatch();
+  expect(PatchProblem(patch, 0x18000), "an LZX window that isn't a power of 2 is refused");
+  expect(PatchProblem(patch, 0x4000), "an LZX window under 32 KB is refused");
+  expect(PatchProblem(patch, 0x400000), "an LZX window over 2 MB is refused");
+  patch.clear();
+  Record(patch, 0, 0, 0x9000, 6);
+  expect(xe::XexDeltaPatchProblem(patch.data(), patch.size(), 0x10000, kWindow),
+         "LZX reference data longer than the window is refused");
+  expect(!xe::XexDeltaPatchProblem(patch.data(), patch.size(), 0x10000, 0x10000),
+         "LZX reference data as long as the window passes");
+  patch.clear();
+  Record(patch, 0xFFFFFFFF, 0x10, 0x20, 0);
+  Record(patch, 0x00, 0x40, 0x10, 1);
+  expect(!PatchProblem(patch, 0x18000), "fills and copies don't use the window");
 
   if (failures) {
     std::fprintf(stderr, "xex_header_test: %d failed\n", failures);
