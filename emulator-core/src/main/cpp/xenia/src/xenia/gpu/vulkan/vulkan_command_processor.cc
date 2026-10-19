@@ -8146,11 +8146,11 @@ bool VulkanCommandProcessor::IssueCopy() {
     uint32_t pixel_size_log2 =
         draw_util::GetResolveDownscalePixelSizeLog2(copy_dest_info);
     if (pixel_size_log2 > 3) {
-      // 128bpp - the tiled scaled addressing reversal in the downscale shader
-      // does not handle it.
+      // 128bpp or blocks - the tiled scaled addressing reversal in the
+      // downscale shader does not handle them.
       XELOGGPU(
-          "Skipping readback of a resolution-scaled resolve to a 128bpp "
-          "destination - not supported by the downscale shader");
+          "Skipping readback of a resolution-scaled resolve to a 128bpp or "
+          "block destination - not supported by the downscale shader");
       if (debug_markers_enabled_) {
         PopDebugMarker();
       }

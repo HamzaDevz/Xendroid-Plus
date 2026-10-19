@@ -607,6 +607,9 @@ enum class ResolveCopyShaderIndex {
   kFull64bpp,
   kFull128bpp,
 
+  // xenos::CopyCommand::kConvertTo1111 to k_DXT3A_AS_1_1_1_1.
+  kDXT3AAs1111,
+
   kCount,
   kUnknown = kCount,
 };
@@ -634,6 +637,18 @@ struct ResolveCopyShaderConstants {
   };
   DestRelative dest_relative;
   uint32_t dest_base;
+};
+
+// Pushed right after ResolveCopyShaderConstants, for kDXT3AAs1111 only, which
+// is never scaled. Not in ResolveCopyShaderConstants because the in-pass resolve
+// pushes its own constants right after those.
+struct ResolveCopy1111ShaderConstants {
+  // RB_COPY_FUNC, a 3 bit CompareFunction per component in bits 0, 4, 8, 12.
+  uint32_t copy_func;
+  // RB_COPY_REF.
+  uint32_t copy_ref;
+  // RB_COPY_MASK.
+  uint32_t copy_mask;
 };
 
 struct ResolveClearShaderConstants {
@@ -693,6 +708,11 @@ struct ResolveInfo {
   uint32_t rb_depth_clear;
   uint32_t rb_color_clear;
   uint32_t rb_color_clear_lo;
+
+  // For xenos::CopyCommand::kConvertTo1111.
+  uint32_t rb_copy_func;
+  uint32_t rb_copy_ref;
+  uint32_t rb_copy_mask;
 
   bool IsCopyingDepth() const {
     return rb_copy_control.copy_src_select >= xenos::kMaxColorRenderTargets;
@@ -788,8 +808,8 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
                     ResolveInfo& info_out);
 
 // Returns log2 of the copy destination texel size in bytes from a Resolve's
-// copy_dest_info (format already normalized) - the derivation GetResolveInfo
-// used for the destination extent.
+// copy_dest_info (format already normalized), or UINT32_MAX for a destination
+// in blocks (copy command 2).
 uint32_t GetResolveDownscalePixelSizeLog2(
     reg::RB_COPY_DEST_INFO copy_dest_info);
 
