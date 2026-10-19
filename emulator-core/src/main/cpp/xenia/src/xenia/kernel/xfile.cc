@@ -186,10 +186,7 @@ X_STATUS XFile::ReadInternal(uint32_t buffer_guest_address,
                   buffer_guest_address, buffer_length, true, true);
             }
 
-            if (byte_offset) {
-              position_.store(byte_offset);
-            }
-            position_.fetch_add(bytes_read);
+            position_.store(byte_offset + bytes_read);
           }
         }
       }
@@ -255,10 +252,8 @@ X_STATUS XFile::ReadScatterInternal(uint32_t segments_guest_address,
     uint32_t bytes_read = 0;
     result =
         ReadInternal(read_buffer, read_length,
-                     byte_offset ? ((byte_offset != -1 && byte_offset != -2)
-                                        ? byte_offset + read_total
-                                        : byte_offset)
-                                 : -1,
+                     byte_offset != uint64_t(-1) ? byte_offset + read_total
+                                                 : byte_offset,
                      &bytes_read, apc_context, false);
 
     if (result != X_STATUS_SUCCESS) {
@@ -304,6 +299,10 @@ X_STATUS XFile::WriteInternal(uint32_t buffer_guest_address,
   if (byte_offset == uint64_t(-1)) {
     // Write from current position.
     byte_offset = position_.load();
+  } else if (byte_offset == kEndOfFile) {
+    // The entry's size is only refreshed on request.
+    entry()->update();
+    byte_offset = entry()->size();
   }
 
   size_t bytes_written = 0;
@@ -311,8 +310,9 @@ X_STATUS XFile::WriteInternal(uint32_t buffer_guest_address,
       std::span<uint8_t>(memory()->TranslateVirtual(buffer_guest_address),
                          buffer_length),
       size_t(byte_offset), &bytes_written);
-  if (XSUCCEEDED(result)) {
-    position_.fetch_add(bytes_written);
+  // A zero-length write leaves the position alone.
+  if (XSUCCEEDED(result) && buffer_length) {
+    position_.store(byte_offset + bytes_written);
   }
 
   XIOCompletion::IONotification notify;
@@ -338,9 +338,9 @@ X_STATUS XFile::SetLength(size_t length) {
   });
   return result;
 }
-X_STATUS XFile::Rename(const std::filesystem::path file_path) {
-  entry()->Rename(file_path);
-  return X_STATUS_SUCCESS;
+X_STATUS XFile::Rename(const std::filesystem::path file_path,
+                       bool replace_existing) {
+  return entry()->Rename(file_path, replace_existing);
 }
 
 void XFile::RegisterIOCompletionPort(uint32_t key,

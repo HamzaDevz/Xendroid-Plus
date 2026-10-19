@@ -699,8 +699,11 @@ void EmulatorApp::emu_thr_main() {
         }
     }
 
-    auto xam = emu->kernel_state()->GetKernelModule<xe::kernel::xam::XamModule>(
-            "xam.xex");
+    // Unowned: this frame lives as long as the process, past every relaunch,
+    // and a reference would keep the first session's XamModule alive.
+    auto* xam = emu->kernel_state()
+                        ->GetKernelModule<xe::kernel::xam::XamModule>("xam.xex")
+                        .get();
 
     if (xam) {
         // XenDroid: edge removed XamModule::LoadLoaderData(); loader_data_ is now populated
