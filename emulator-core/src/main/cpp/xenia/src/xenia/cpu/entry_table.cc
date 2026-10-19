@@ -13,6 +13,7 @@
 
 #include "xenia/base/profiling.h"
 #include "xenia/base/threading.h"
+#include "xenia/cpu/function.h"
 
 namespace xe {
 namespace cpu {
@@ -117,6 +118,14 @@ std::vector<Function*> EntryTable::DeleteRange(uint32_t start, uint32_t end) {
   while (it != ready_by_address_.end() && it->first <= end) {
     Entry* entry = it->second;
     if (entry->end_address < start) {
+      ++it;
+      continue;
+    }
+    // An import thunk or a save/restore helper keeps what the loader set up
+    // for it: the guest writes no code over one, and compiled again it would
+    // come back without its handler or saverest metadata.
+    if (entry->function &&
+        entry->function->behavior() != Function::Behavior::kDefault) {
       ++it;
       continue;
     }
