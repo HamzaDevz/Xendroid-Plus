@@ -11,6 +11,7 @@
 #define XENIA_KERNEL_XAM_CONTENT_MANAGER_H_
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -287,11 +288,20 @@ class ContentManager {
 
   bool UpdateSpaData(vfs::Entry* spa_file_update);
 
+  // Turns a package stored as the file itself into the extracted folder, in
+  // place; false (the file untouched) when it cannot. File I/O: called without
+  // the global critical region.
+  bool UnpackPackageFile(const std::filesystem::path& package_path);
+
   KernelState* kernel_state_;
   std::filesystem::path root_path_;
 
   // TODO(benvanik): remove use of global lock, it's bad here!
   xe::global_critical_region global_critical_region_;
+  // Serializes UnpackPackageFile, and the package files it failed on, which
+  // are not tried again this session (each try copies the whole save).
+  std::mutex unpack_mutex_;
+  std::unordered_set<std::string> unpack_failed_;
   std::unordered_map<string_key_insensitive, ContentPackage*> open_packages_;
 };
 
