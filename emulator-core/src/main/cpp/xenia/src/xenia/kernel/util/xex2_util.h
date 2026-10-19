@@ -122,6 +122,53 @@ inline const char* XexHeaderProblem(const void* data, size_t length) {
   return nullptr;
 }
 
+// Why the delta patch records in the first `length` bytes at `data` go outside
+// them, or reach outside a destination of `dest_length` bytes; nullptr when
+// they don't. lzxdelta_apply_patch walks them: a 12-byte record, followed by
+// its LZX data when compressed_len is over 1, up to a record of zeros or a
+// tail too short for one. A record writes uncompressed_len bytes at new_addr,
+// and one that copies (compressed_len 1) or decompresses reads as many at
+// old_addr. One with LZX data puts those it reads at the end of a window of
+// `window_size` bytes, which LZX makes a power of 2 from 32 KB to 2 MB. Title
+// updates give all of these from the file.
+inline const char* XexDeltaPatchProblem(const void* data, size_t length,
+                                        size_t dest_length,
+                                        uint32_t window_size) {
+  constexpr size_t kRecordSize = offsetof(xex2_delta_patch, patch_data);
+  const bool window_valid = window_size >= (uint32_t(1) << 15) &&
+                            window_size <= (uint32_t(1) << 21) &&
+                            !(window_size & (window_size - 1));
+  const auto* bytes = static_cast<const uint8_t*>(data);
+  size_t at = 0;
+  while (length - at >= kRecordSize) {
+    const auto* record = reinterpret_cast<const xex2_delta_patch*>(bytes + at);
+    const uint64_t old_addr = record->old_addr;
+    const uint64_t new_addr = record->new_addr;
+    const uint32_t size = record->uncompressed_len;
+    const uint32_t compressed = record->compressed_len;
+    if (!old_addr && !new_addr && !size && !compressed) {
+      break;
+    }
+    if (new_addr + size > dest_length) {
+      return "a delta patch record writes outside its destination";
+    }
+    if (compressed && old_addr + size > dest_length) {
+      return "a delta patch record reads outside its destination";
+    }
+    at += kRecordSize;
+    if (compressed > 1) {
+      if (!window_valid || size > window_size) {
+        return "a delta patch record's data doesn't fit the LZX window";
+      }
+      if (length - at < compressed) {
+        return "a delta patch record's data is outside the patch";
+      }
+      at += compressed;
+    }
+  }
+  return nullptr;
+}
+
 }  // namespace xe
 
 #endif  // XENIA_KERNEL_UTIL_XEX2_UTIL_H_

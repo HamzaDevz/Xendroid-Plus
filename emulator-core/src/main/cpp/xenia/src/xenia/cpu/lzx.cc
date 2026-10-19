@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstddef>
 #include <cstring>
 
 #include "xenia/base/byte_order.h"
@@ -18,6 +19,7 @@
 #include "xenia/base/math.h"
 #include "xenia/base/memory.h"
 #include "xenia/kernel/util/xex2_info.h"
+#include "xenia/kernel/util/xex2_util.h"
 
 #include "third_party/mspack/lzx.h"
 #include "third_party/mspack/mspack.h"
@@ -99,8 +101,13 @@ int lzx_decompress(const void* lzx_data, size_t lzx_len, void* dest,
                    size_t window_data_len) {
   int result_code = 1;
 
+  // The window is 1 << window_bits bytes: a size that isn't a power of 2, or
+  // reference data longer than the window, would put the padding and the data
+  // past it.
   uint32_t window_bits;
-  if (!xe::bit_scan_forward(window_size, &window_bits)) {
+  if (!xe::bit_scan_forward(window_size, &window_bits) ||
+      window_size != (uint32_t(1) << window_bits) ||
+      (window_data && window_data_len > window_size)) {
     return result_code;
   }
 
@@ -147,11 +154,21 @@ int lzx_decompress(const void* lzx_data, size_t lzx_len, void* dest,
 }
 
 int lzxdelta_apply_patch(xe::xex2_delta_patch* patch, size_t patch_len,
-                         uint32_t window_size, void* dest) {
+                         uint32_t window_size, void* dest, size_t dest_len) {
+  // The offsets and lengths come from the file, and the hashes don't stop a
+  // crafted one.
+  if (const char* problem = xe::XexDeltaPatchProblem(patch, patch_len,
+                                                     dest_len, window_size)) {
+    XELOGE("XEX delta patch refused: {}", problem);
+    return MSPACK_ERR_DATAFORMAT;
+  }
   void* patch_end = (char*)patch + patch_len;
   auto* cur_patch = patch;
 
-  while (patch_end > cur_patch) {
+  // As XexDeltaPatchProblem walks them: a tail too short for a record ends
+  // them.
+  while ((char*)patch_end - (char*)cur_patch >=
+         ptrdiff_t(offsetof(xe::xex2_delta_patch, patch_data))) {
     int patch_sz = -4;  // 0 byte patches need us to remove 4 byte from next
                         // patch addr because of patch_data field
     if (cur_patch->compressed_len == 0 && cur_patch->uncompressed_len == 0 &&

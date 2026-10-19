@@ -258,6 +258,28 @@ int XexModule::ApplyPatch(XexModule* module) {
 
   size_t mem_size = module->xex_header_mem_.size();
 
+  // The header is patched grown to header_target_size: what the patch copies
+  // in it has to be inside that.
+  const uint64_t header_mem_size =
+      std::max(uint64_t(mem_size), uint64_t(header_target_size));
+  if (patch_header->delta_headers_source_offset &&
+      (uint64_t(patch_header->delta_headers_source_offset) +
+               patch_header->delta_headers_source_size >
+           header_mem_size ||
+       uint64_t(patch_header->delta_headers_target_offset) +
+               patch_header->delta_headers_source_size >
+           header_mem_size)) {
+    XELOGE("XEX patch copies header data outside the header");
+    return 11;
+  }
+  // The header patch's records follow the descriptor's fields, in its size.
+  constexpr uint32_t kHeaderPatchOffset =
+      offsetof(xex2_opt_delta_patch_descriptor, info);
+  if (patch_header->size < kHeaderPatchOffset) {
+    XELOGE("XEX patch descriptor is shorter than its fields");
+    return 11;
+  }
+
   // Increase xex header buffer length if needed
   if (header_target_size > module->xex_header_mem_.size()) {
     module->xex_header_mem_.resize(header_target_size);
@@ -282,11 +304,12 @@ int XexModule::ApplyPatch(XexModule* module) {
   }
 
   // Apply header patch...
-  uint32_t headerpatch_size = patch_header->size;
+  uint32_t headerpatch_size = patch_header->size - kHeaderPatchOffset;
 
   int result_code = lzxdelta_apply_patch(
       &patch_header->info, headerpatch_size,
-      file_format_header->compression_info.normal.window_size, header_ptr);
+      file_format_header->compression_info.normal.window_size, header_ptr,
+      module->xex_header_mem_.size());
   if (result_code) {
     XELOGE("XEX header patch application failed, error code {}", result_code);
     return result_code;
@@ -309,6 +332,20 @@ int XexModule::ApplyPatch(XexModule* module) {
   const bool base_moved = new_base_address != original_base_address;
 
   uint32_t new_image_size = module->image_size();
+
+  // What the image patch writes in: the old image, and the new one where it
+  // grew (allocated below).
+  const uint32_t image_span = std::max(original_image_size, new_image_size);
+  if (patch_header->delta_image_source_offset &&
+      (uint64_t(patch_header->delta_image_source_offset) +
+               patch_header->delta_image_source_size >
+           image_span ||
+       uint64_t(patch_header->delta_image_target_offset) +
+               patch_header->delta_image_source_size >
+           image_span)) {
+    XELOGE("XEX patch copies image data outside the image");
+    return 11;
+  }
 
   // Check if we need to alloc new memory for the patched xex
   if (base_moved || new_image_size > original_image_size) {
@@ -463,7 +500,8 @@ int XexModule::ApplyPatch(XexModule* module) {
     // Apply delta patch
     result_code = lzxdelta_apply_patch(
         (xex2_delta_patch*)p, block_data_size,
-        file_format_header->compression_info.normal.window_size, base_exe);
+        file_format_header->compression_info.normal.window_size, base_exe,
+        image_span);
     if (result_code) {
       break;
     }

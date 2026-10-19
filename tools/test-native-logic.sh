@@ -3,7 +3,7 @@
 # schedule, the pipeline cache file store, the guest vblank pacer, the native crash
 # record (written from a real fault handler), the changed-settings lines, the guest
 # frame stats, the adaptive audio buffer, the audio drivers' block processing and
-# the XEX header bounds.
+# the XEX header and title update patch bounds.
 # They need only a C++20 compiler.
 # With XENDROID_NDK, also host threads: APCs alerted at once to several threads.
 #
