@@ -27,6 +27,7 @@
 
 #include "xenia/base/assert.h"
 #include "xenia/base/byte_order.h"
+#include "xenia/base/clock.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/frame_stats.h"
 #include "xenia/base/logging.h"
@@ -76,6 +77,7 @@ DECLARE_bool(texture_partial_reload);
 DECLARE_bool(texture_integer_num_format);
 DECLARE_bool(vulkan_direct_host_resolve);
 DECLARE_bool(vulkan_async_skip_draws);
+DECLARE_bool(vulkan_async_wait_persistent_draws);
 DECLARE_bool(vulkan_depth_clamp_without_depth);
 DECLARE_bool(apu_adaptive_queue);
 DECLARE_bool(merge_tiling_bands);
@@ -6152,11 +6154,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   if (memexport_used_pixel) {
     draw_util::AddMemExportRanges(regs, *pixel_shader, memexport_ranges_);
   }
-  if (frame_dump_file_ && !issue_draw_memexport_retry_) {
+  if (frame_dump_file_ && !issue_draw_pipeline_retry_) {
     DumpFrameDraw(*vertex_shader, pixel_shader, prim_type, index_count,
                   index_buffer_info);
   }
-  if (!issue_draw_memexport_retry_) {
+  if (!issue_draw_pipeline_retry_) {
     const uint32_t draw_index = frame_draw_index_++;
     if (draw_index >= skip_draws_first_ && draw_index <= skip_draws_last_ &&
         (draw_index < skip_draws_keep_first_ ||
@@ -6573,6 +6575,16 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       return false;
     }
   }
+  // For a draw whose pipeline is still being created (below): whether its
+  // render target is redrawn every frame, and whether its vertex shader is new.
+  // Every draw counts, also the retried one, which redraws the same target in
+  // the same frame.
+  const bool draw_target_recurring =
+      render_target_cache_->TrackLastUpdateDrawTarget(frame_current_);
+  const bool vertex_shader_drawn = vertex_shader->is_drawn();
+  if (!vertex_shader_drawn) {
+    vertex_shader->set_drawn();
+  }
 
   // merge_tiling_bands: the multisampled render targets the first band draws
   // into are drawn as tall as the screen - a scissor covering the band covers
@@ -6581,7 +6593,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // starting the later bands' rows with what the first band starts with).
   tiling_band_draw_y_offset_ = 0;
   tiling_band_draw_expand_scissor_ = false;
-  tiling_band_replicate_ = 0;
+  // Issued again after waiting for its pipeline, the draw keeps the rows the
+  // first pass noted to replicate: band targets are noted at their first draw.
+  if (!issue_draw_pipeline_retry_) {
+    tiling_band_replicate_ = 0;
+  }
   if (tiling_band_merge_active()) {
     if (tiling_band_sequence_seen_ != tiling_band_sequence()) {
       tiling_band_sequence_seen_ = tiling_band_sequence();
@@ -6603,7 +6619,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     }
     bool into_band_targets = false;
     if (tiling_band_merge_active()) {
-      tiling_band_replicate_ = render_target_cache_->NoteTilingBandDraw(
+      tiling_band_replicate_ |= render_target_cache_->NoteTilingBandDraw(
           tiling_band() == 0, normalized_depth_control, normalized_color_mask,
           *vertex_shader, into_band_targets);
     }
@@ -6675,36 +6691,75 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     return false;
   }
 
-  // A draw exporting memory writes data later draws and the CPU use, not only
-  // pixels. Recorded while its pipeline is still being created (or its shaders
-  // translated), it would be dropped at replay and its output never written -
-  // Crysis 3 generates index buffers that way while loading and when objects
-  // break, and a dropped one keeps another mesh's indices (long spikes across
-  // the screen). Wait for the creation and issue it again, once.
-  if (!memexport_ranges_.empty() && !issue_draw_memexport_retry_ &&
-      (pipeline->pipeline.load(std::memory_order_acquire) == VK_NULL_HANDLE ||
-       !stage_bindings_ready[0] ||
-       (pixel_shader && !stage_bindings_ready[1]))) {
-    pipeline_cache_->AwaitPipelineCompletion();
-    static std::atomic<uint32_t> logged{0};
-    if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
-      XELOGI(
-          "IssueDraw: waited for the pipeline of a memory-exporting draw "
-          "(VS {:016X}, PS {:016X}) instead of dropping it",
-          vertex_shader->ucode_data_hash(),
-          pixel_shader ? pixel_shader->ucode_data_hash() : 0);
-    }
-    // From the state the guest set: vulkan_depth_4x_as_1x may have rewritten
-    // the surface for this draw already, and the draw would then neither see
-    // a 4x surface nor scale itself to the samples.
+  // A draw recorded while its pipeline is still being created (or its shaders
+  // translated) is dropped at replay. That is only harmless in a pass redrawn
+  // every frame. Where its output stays, get the pipeline now and issue the
+  // draw again, once:
+  // - memory export writes data later draws and the CPU use, not only pixels:
+  //   Crysis 3 generates index buffers that way while loading and when objects
+  //   break, and a dropped one keeps another mesh's indices (long spikes across
+  //   the screen);
+  // - a small render target is generated data, like impostors or lookup
+  //   tables, often kept past the frame;
+  // - a new vertex shader into a render target not drawn in the last frames is
+  //   likely a one-off render to a texture.
+  // Only this pipeline is waited for; the others keep building in the
+  // background.
+  // Issues the draw again, once, from the state the guest set:
+  // vulkan_depth_4x_as_1x may have rewritten the surface for this draw already,
+  // and the draw would then neither see a 4x surface nor scale itself to the
+  // samples.
+  auto issue_draw_again = [&]() {
     register_file_->values[XE_GPU_REG_RB_SURFACE_INFO] =
         surface_info_restore.surface_info;
     render_target_cache_->SetDrawSamplesAsPixels(false);
-    issue_draw_memexport_retry_ = true;
+    issue_draw_pipeline_retry_ = true;
     const bool issued = IssueDraw(prim_type, index_count, index_buffer_info,
                                   major_mode_explicit);
-    issue_draw_memexport_retry_ = false;
+    issue_draw_pipeline_retry_ = false;
     return issued;
+  };
+  const char* pipeline_wait_reason = nullptr;
+  // A pipeline whose creation failed stays unready, and its draws are dropped.
+  if (!issue_draw_pipeline_retry_ &&
+      !pipeline->creation_failed.load(std::memory_order_acquire)) {
+    const VkPipeline configured_pipeline =
+        pipeline->pipeline.load(std::memory_order_acquire);
+    if (configured_pipeline == VK_NULL_HANDLE ||
+        configured_pipeline ==
+            pipeline->placeholder_pipeline.load(std::memory_order_acquire) ||
+        !stage_bindings_ready[0] ||
+        (pixel_shader && !stage_bindings_ready[1])) {
+      if (!memexport_ranges_.empty()) {
+        pipeline_wait_reason = "memexport";
+      } else if (cvars::vulkan_async_wait_persistent_draws) {
+        if (render_target_cache_->IsLastUpdateDrawTargetSmall()) {
+          pipeline_wait_reason = "small render target";
+        } else if (!draw_target_recurring && !vertex_shader_drawn) {
+          pipeline_wait_reason = "new VS, render target not drawn recently";
+        }
+      }
+    }
+  }
+  if (pipeline_wait_reason) {
+    const uint64_t wait_start = xe::Clock::QueryHostTickCount();
+    const bool pipeline_ready = pipeline_cache_->ExpeditePipeline(pipeline);
+    static std::atomic<uint32_t> logged{0};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < 64) {
+      XELOGI(
+          "IssueDraw: waited {:.2f} ms for the pipeline of a draw into {} ({}), "
+          "{}: VS {:016X}, PS {:016X}",
+          double(xe::Clock::QueryHostTickCount() - wait_start) * 1000.0 /
+              double(xe::Clock::QueryHostTickFrequency()),
+          render_target_cache_->GetLastUpdateDrawTargetName(),
+          pipeline_wait_reason,
+          pipeline_ready ? "drawing it" : "which failed, dropping it",
+          vertex_shader->ucode_data_hash(),
+          pixel_shader ? pixel_shader->ucode_data_hash() : 0);
+    }
+    if (pipeline_ready) {
+      return issue_draw_again();
+    }
   }
 
   if (drop_until_ready) {
@@ -6723,6 +6778,25 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // pipeline will be swapped in by the creation thread when ready.
   VkPipeline current_pipeline =
       pipeline->pipeline.load(std::memory_order_acquire);
+  const bool configured_placeholder_bound =
+      current_pipeline != VK_NULL_HANDLE &&
+      current_pipeline ==
+          pipeline->placeholder_pipeline.load(std::memory_order_acquire);
+  // A creation thread may have finished the real pipeline, translating its
+  // shaders, after this draw gathered the stage bindings without them: issue
+  // it again to gather them.
+  if (!issue_draw_pipeline_retry_ && current_pipeline != VK_NULL_HANDLE &&
+      !configured_placeholder_bound &&
+      (!stage_bindings_ready[0] ||
+       (pixel_shader && !stage_bindings_ready[1]))) {
+    return issue_draw_again();
+  }
+  // A placeholder with the no-op pixel shader writes no color, which leaves the
+  // bound color targets undefined: its color writes are masked off, also when
+  // the mask is dynamic.
+  const bool placeholder_writes_no_color =
+      configured_placeholder_bound &&
+      !pipeline->placeholder_writes_color.load(std::memory_order_relaxed);
   if (cvars::vulkan_placeholder_pipelines &&
       current_pipeline == VK_NULL_HANDLE) {
     // Placeholder mode: real pipeline not created yet and no placeholder -
@@ -6974,7 +7048,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   UpdateDynamicState(viewport_info, primitive_polygonal,
                      normalized_depth_control, draw_resolution_scale_x,
                      draw_resolution_scale_y, apply_host_depth_polygon_offset,
-                     pipeline->dynamic_state);
+                     pipeline->dynamic_state, placeholder_writes_no_color);
 
   auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
 
@@ -7404,7 +7478,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     UpdateDynamicState(viewport_info, primitive_polygonal,
                        normalized_depth_control, draw_resolution_scale_x,
                        draw_resolution_scale_y, apply_host_depth_polygon_offset,
-                       pipeline->dynamic_state);
+                       pipeline->dynamic_state, placeholder_writes_no_color);
     if (!UpdateBindings(vertex_shader, pixel_shader, stage_bindings_ready[0],
                         stage_bindings_ready[1], interpreter_placeholder,
                         placeholder_pixel_shader)) {
@@ -7429,7 +7503,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     UpdateDynamicState(viewport_info, primitive_polygonal,
                        normalized_depth_control, draw_resolution_scale_x,
                        draw_resolution_scale_y, apply_host_depth_polygon_offset,
-                       pipeline->dynamic_state);
+                       pipeline->dynamic_state, placeholder_writes_no_color);
     if (!UpdateBindings(vertex_shader, pixel_shader, stage_bindings_ready[0],
                         stage_bindings_ready[1], interpreter_placeholder,
                         placeholder_pixel_shader)) {
@@ -10041,7 +10115,8 @@ void VulkanCommandProcessor::UpdateDynamicState(
     reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y,
     bool depth_bias_in_pixel_shader,
-    const VulkanPipelineCache::DynamicState& pipeline_dynamic_state) {
+    const VulkanPipelineCache::DynamicState& pipeline_dynamic_state,
+    bool color_writes_off) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -10458,8 +10533,10 @@ void VulkanCommandProcessor::UpdateDynamicState(
         if (eds_caps.color_write_mask) {
           bool changed = false;
           for (uint32_t i = 0; i < attachment_count; ++i) {
-            if (dynamic_color_write_mask_[i] != ds.color_write_mask[i]) {
-              dynamic_color_write_mask_[i] = ds.color_write_mask[i];
+            VkColorComponentFlags color_write_mask =
+                color_writes_off ? 0 : ds.color_write_mask[i];
+            if (dynamic_color_write_mask_[i] != color_write_mask) {
+              dynamic_color_write_mask_[i] = color_write_mask;
               changed = true;
             }
           }

@@ -10,6 +10,7 @@
 #ifndef XENIA_GPU_VULKAN_VULKAN_PIPELINE_STATE_CACHE_H_
 #define XENIA_GPU_VULKAN_VULKAN_PIPELINE_STATE_CACHE_H_
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -129,6 +130,15 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
     // unlike the separate is_placeholder flag which is cleared a few
     // instructions after the real pipeline is swapped in.
     std::atomic<VkPipeline> placeholder_pipeline{VK_NULL_HANDLE};
+    // Set while a creation thread builds the entry, under
+    // creation_request_lock_, for ExpeditePipeline.
+    std::atomic<bool> creation_in_flight{false};
+    // Set when translating its shaders or creating it failed: the slot stays
+    // VK_NULL_HANDLE (or the placeholder), and draws don't wait for it.
+    std::atomic<bool> creation_failed{false};
+    // Whether the placeholder writes color (its pixel shader isn't the no-op
+    // one), so the dynamic color write mask matches the static one.
+    std::atomic<bool> placeholder_writes_color{false};
 
     Pipeline(const PipelineLayoutProvider* pipeline_layout_provider)
         : pipeline_layout(pipeline_layout_provider), dynamic_state{} {}
@@ -145,7 +155,12 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
           uses_interpreter(
               other.uses_interpreter.load(std::memory_order_acquire)),
           placeholder_pipeline(
-              other.placeholder_pipeline.load(std::memory_order_acquire)) {}
+              other.placeholder_pipeline.load(std::memory_order_acquire)),
+          creation_in_flight(
+              other.creation_in_flight.load(std::memory_order_acquire)),
+          creation_failed(other.creation_failed.load(std::memory_order_acquire)),
+          placeholder_writes_color(
+              other.placeholder_writes_color.load(std::memory_order_acquire)) {}
 
     // Move constructor
     Pipeline(Pipeline&& other) noexcept
@@ -159,7 +174,12 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
           uses_interpreter(
               other.uses_interpreter.load(std::memory_order_acquire)),
           placeholder_pipeline(
-              other.placeholder_pipeline.load(std::memory_order_acquire)) {}
+              other.placeholder_pipeline.load(std::memory_order_acquire)),
+          creation_in_flight(
+              other.creation_in_flight.load(std::memory_order_acquire)),
+          creation_failed(other.creation_failed.load(std::memory_order_acquire)),
+          placeholder_writes_color(
+              other.placeholder_writes_color.load(std::memory_order_acquire)) {}
 
     // Deleted copy assignment to prevent accidental copying
     Pipeline& operator=(const Pipeline&) = delete;
@@ -226,6 +246,14 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
   // before state is consumed. This was added so strict ZPD query paths stop
   // racing pipeline compilation and then blocking work on incomplete state.
   void AwaitPipelineCompletion();
+  // For a draw that can't be dropped while its pipeline is still being created:
+  // creates the pipeline on this thread if it is still queued, or waits for the
+  // creation thread that took it. Other queued pipelines keep building in the
+  // background. Returns whether the real pipeline (not a placeholder) exists
+  // now. Draw thread only: it translates with the shared translator, and a
+  // creation on this thread doesn't set creation_in_flight, so another caller
+  // wouldn't wait for it.
+  bool ExpeditePipeline(Pipeline* pipeline);
 
   VulkanShader* LoadShader(xenos::ShaderType shader_type,
                            const uint32_t* host_address, uint32_t dword_count);
@@ -470,6 +498,44 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
     }
   };
 
+  // A priority queue (a heap in a vector) that can also give up a given
+  // pipeline's request, for ExpeditePipeline.
+  class CreationRequestHeap {
+   public:
+    bool empty() const { return heap_.empty(); }
+    const PipelineCreationArguments& top() const { return heap_.front(); }
+    void push(const PipelineCreationArguments& creation_arguments) {
+      heap_.push_back(creation_arguments);
+      std::push_heap(heap_.begin(), heap_.end(),
+                     PipelineCreationPriorityCompare());
+    }
+    void pop() {
+      std::pop_heap(heap_.begin(), heap_.end(),
+                    PipelineCreationPriorityCompare());
+      heap_.pop_back();
+    }
+    // Removes the queued request of `pipeline` into creation_arguments_out.
+    bool Take(const Pipeline* pipeline,
+              PipelineCreationArguments& creation_arguments_out) {
+      auto it = std::find_if(heap_.begin(), heap_.end(),
+                             [pipeline](const PipelineCreationArguments& a) {
+                               return &a.pipeline->second == pipeline;
+                             });
+      if (it == heap_.end()) {
+        return false;
+      }
+      creation_arguments_out = *it;
+      *it = heap_.back();
+      heap_.pop_back();
+      std::make_heap(heap_.begin(), heap_.end(),
+                     PipelineCreationPriorityCompare());
+      return true;
+    }
+
+   private:
+    std::vector<PipelineCreationArguments> heap_;
+  };
+
   // Can be called from multiple threads. use_try_claim atomically claims the
   // translation so concurrent callers (draw thread + creation threads)
   // translate it exactly once, the losers waiting for the winner.
@@ -676,6 +742,14 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
   std::pair<const PipelineDescription, Pipeline>* last_pipeline_ = nullptr;
 
   void CreationThread();
+  // Translates the shaders of a queued request if needed, upgrades its layout
+  // and creates it, on a creation thread (with its own translator) or on the
+  // draw thread (ExpeditePipeline, with the shared one).
+  void CreateQueuedPipeline(PipelineCreationArguments& creation_arguments,
+                            SpirvShaderTranslator* translator);
+  // With creation_request_lock_ held: signals whatever waits for the creation
+  // threads to run out of work, once they have.
+  void NotifyCreationIdleLocked(std::unique_lock<std::mutex>& lock);
 
   // For asynchronous creation.
   std::vector<std::unique_ptr<xe::threading::Thread>> creation_threads_;
@@ -685,18 +759,22 @@ class VulkanPipelineCache : public GuestSpirvShaderCache::Host {
   // evicted as games have a finite set that should all remain cached for
   // performance. Higher priority pipelines (those writing to visible RTs)
   // are compiled first.
-  std::priority_queue<PipelineCreationArguments,
-                      std::vector<PipelineCreationArguments>,
-                      PipelineCreationPriorityCompare>
-      creation_queue_;
+  CreationRequestHeap creation_queue_;
   std::mutex creation_request_lock_;
   std::condition_variable creation_request_cond_;
+  // Notified when a creation thread is done with a pipeline it took.
+  std::condition_variable creation_done_cond_;
   std::unique_ptr<xe::threading::Event> creation_completion_event_ = nullptr;
   std::atomic<bool> creation_completion_set_event_{false};
   std::function<void()> creation_completion_callback_;
+  // Set by ExpeditePipeline when it leaves the creation idle: a creation thread
+  // signals that then, as the completion callback may block (on Android it
+  // waits for the UI thread) and the draw thread must not.
+  bool creation_idle_notify_pending_ = false;
   // During startup loading, don't block on pipeline creation to allow game
-  // boot.
-  bool startup_loading_ = false;
+  // boot. Cleared by the completion callback: on a creation thread, or on
+  // the thread calling InitializeShaderStorage when it queued nothing.
+  std::atomic<bool> startup_loading_{false};
 
   // Deferred destruction of pipelines.
   // Pipelines are only destroyed after the GPU submission that might reference

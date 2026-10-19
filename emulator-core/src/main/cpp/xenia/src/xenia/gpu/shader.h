@@ -1039,6 +1039,12 @@ class Shader {
         expected, new_index, std::memory_order_relaxed);
   }
 
+  // Whether a draw has used this vertex shader, in this session or in the one
+  // that stored a pipeline the storage warm-up queued with it (atomic as the
+  // storage may load beside the draws).
+  bool is_drawn() const { return is_drawn_.load(std::memory_order_relaxed); }
+  void set_drawn() { is_drawn_.store(true, std::memory_order_relaxed); }
+
   // Dumps the shader's microcode binary and, if analyzed, disassembly, to files
   // in the given directory based on ucode hash. Returns the name of the written
   // file. Can be called at any time, doesn't require the shader to be
@@ -1104,6 +1110,8 @@ class Shader {
   std::unordered_map<uint64_t, Translation*> translations_;
 
   std::atomic<uint32_t> ucode_storage_index_{UINT32_MAX};
+
+  std::atomic<bool> is_drawn_{false};
 
  private:
   void GatherExecInformation(
