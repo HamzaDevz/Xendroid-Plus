@@ -37,6 +37,9 @@ enum FunctionAttributes {
   FUNCTION_ATTRIB_INLINE = (1 << 1),
   // Keeps every context store, so a fault mid-block sees current registers.
   FUNCTION_ATTRIB_KEEP_CONTEXT_STORES = (1 << 2),
+  // Code the guest wrote at run time, which may run in user mode: a constant
+  // address names memory of the address space it runs in, not the kernel's.
+  FUNCTION_ATTRIB_DYNAMIC_CODE = (1 << 3),
 };
 
 class HIRBuilder {
