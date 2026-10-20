@@ -4,6 +4,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -28,14 +29,20 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -106,7 +113,18 @@ fun LibraryTouch(
 ) {
     val c = Xd.colors
     val shown = remember(data, filter, query) { data.shown(filter, query) }
-    BoxWithConstraints(Modifier.fillMaxSize().background(c.bg)) {
+    val covers = remember { FocusRequester() }
+    val pickedCover = remember { FocusRequester() }
+    // The key of the chosen game's card while it is composed (it carries pickedCover).
+    var pickedKey by remember { mutableStateOf<String?>(null) }
+    BoxWithConstraints(Modifier.fillMaxSize().background(c.bg).firstFocusTo {
+        val key = pickedKey
+        when {
+            key != null && gridState.layoutInfo.visibleItemsInfo.any { it.key == key } -> pickedCover
+            shown.isNotEmpty() -> covers
+            else -> null
+        }
+    }) {
         val portrait = maxHeight > maxWidth
         val main: @Composable (Modifier) -> Unit = { m ->
             Column(m.windowInsetsPadding(WindowInsets.safeDrawing.part(top = true)).fillMaxHeight()) {
@@ -155,11 +173,18 @@ fun LibraryTouch(
                         contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 22.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        modifier = Modifier.weight(1f).fillMaxWidth().focusRequester(covers),
                     ) {
                         items(shown, key = { it.stableId }) { game ->
+                            val picked = !portrait && game.stableId == selected?.stableId
+                            if (picked) DisposableEffect(game.stableId) {
+                                pickedKey = game.stableId
+                                // The cards are composed apart: the next pick may have come first.
+                                onDispose { if (pickedKey == game.stableId) pickedKey = null }
+                            }
                             LibraryCard(
-                                game, data, artOf(game), picked = !portrait && game.stableId == selected?.stableId, small = density == CoverDensity.SMALL,
+                                game, data, artOf(game), picked = picked, small = density == CoverDensity.SMALL,
+                                modifier = if (picked) Modifier.focusRequester(pickedCover) else Modifier,
                                 onClick = { if (portrait || game.stableId == selected?.stableId) onOpen(game) else onSelect(game) },
                                 onLongClick = { onOpen(game) },
                                 onFocused = { if (!portrait) onSelect(game) },
@@ -191,6 +216,23 @@ fun LibraryTouch(
     }
 }
 
+/**
+ * The focus that comes into the library from outside it, in practice from nowhere (a controller's
+ * first press), goes to the covers: to the chosen game's when its card is on screen, else to the
+ * top-left one ([target], null when there are no covers). On its own it took the control nearest
+ * the top-left corner, the search field in portrait, and the keyboard came up over the games.
+ * Only the D-pad's directions are sent there: a tap focuses what it touched (its request enters as
+ * [FocusDirection.Enter]), Tab goes through the controls in order, and moves inside the library
+ * are not entries.
+ */
+@OptIn(ExperimentalComposeUiApi::class)
+private fun Modifier.firstFocusTo(target: () -> FocusRequester?): Modifier =
+    focusProperties {
+        enter = { if (it in DPAD) target() ?: FocusRequester.Default else FocusRequester.Default }
+    }.focusGroup()
+
+private val DPAD = setOf(FocusDirection.Up, FocusDirection.Down, FocusDirection.Left, FocusDirection.Right)
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LibraryCard(
@@ -203,12 +245,13 @@ private fun LibraryCard(
     onLongClick: () -> Unit,
     onFocused: () -> Unit,
     onPad: (PadButton) -> Boolean,
+    modifier: Modifier = Modifier,
 ) {
     val c = Xd.colors
     var focused by remember { mutableStateOf(false) }
     val radius = RoundedCornerShape(c.coverRadius)
     Column(
-        Modifier
+        modifier
             .onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocused() }
             .onPreviewKeyEvent { e -> padButtonOf(e)?.let(onPad) ?: false }
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
