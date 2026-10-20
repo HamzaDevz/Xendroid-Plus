@@ -24,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import xendroid.compose.compatibility.CompatStatus
+import xendroid.compose.ui.design.controllerLeaves
 
 /** The user's own result for a game; touch and D-pad/A both select through `selectable`. */
 @Composable
@@ -54,7 +55,7 @@ fun CompatibilityRatingDialog(
                     value = note,
                     onValueChange = { if (it.length <= 500) note = it },
                     label = { Text(stringResource(R.string.rate_notes)) },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().controllerLeaves(singleLine = false) { note.isEmpty() },
                 )
                 Text(stringResource(R.string.rate_note))
             }

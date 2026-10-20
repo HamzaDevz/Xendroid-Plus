@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import xendroid.compose.data.GameCollection
 import xendroid.compose.data.GameCollections
+import xendroid.compose.ui.design.controllerLeaves
 
 /**
  * L06: which of the user's collections hold one game, a new collection, and deleting one
@@ -73,7 +74,7 @@ fun CollectionsDialog(
                             onValueChange = { newName = it.take(GameCollections.MAX_NAME) },
                             label = { Text(stringResource(R.string.col_new)) },
                             singleLine = true,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1f).controllerLeaves { newName.isEmpty() },
                         )
                         TextButton(enabled = GameCollections.cleanName(newName) != null, onClick = {
                             onCreate(newName)

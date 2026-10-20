@@ -3,7 +3,6 @@ package xendroid.compose.ui.design
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -757,13 +756,13 @@ fun CGuide(onDismiss: () -> Unit) {
         val first = remember { FocusRequester() }
         Box(
             Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.58f))
-                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismiss)
+                .tapOnly(onDismiss)
                 .onPreviewKeyEvent { e -> if (padButtonOf(e) == PadButton.START) { onDismiss(); true } else false },
         ) {
             Column(
                 Modifier.fillMaxHeight().widthIn(max = 320.dp).fillMaxWidth(0.86f)
                     .background(Brush.verticalGradient(listOf(Color(0xFF151B18), Color(0xFF0D110F))))
-                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
+                    .tapOnly {}
                     .windowInsetsPadding(WindowInsets.safeDrawing.part(top = true, start = true, bottom = true))
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 12.dp, vertical = 16.dp),

@@ -42,6 +42,7 @@ import xendroid.compose.compatibility.CompatStatus
 import xendroid.compose.compatibility.LoadedProfile
 import xendroid.compose.settings.GameSettingsViewModel.CommunityState
 import xendroid.compose.settings.SettingsSchema
+import xendroid.compose.ui.design.controllerLeaves
 import xendroid.compose.ui.library.compatStatusText
 
 /** 15b: settings other players shared for the game, closest phone first, and sharing this game's own. */
@@ -214,13 +215,13 @@ fun CommunityShareDialog(
                     onValueChange = { if (it.length <= CommunityConfigs.MAX_NAME) name = it },
                     label = { Text(stringResource(R.string.comm_share_name)) },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().controllerLeaves { name.isEmpty() },
                 )
                 OutlinedTextField(
                     value = note,
                     onValueChange = { if (it.length <= CommunityConfigs.MAX_NOTE) note = it },
                     label = { Text(stringResource(R.string.comm_share_note)) },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().controllerLeaves(singleLine = false) { note.isEmpty() },
                 )
                 Text(stringResource(R.string.comm_share_result), style = MaterialTheme.typography.bodyMedium)
                 CompatStatus.entries.forEach { status ->

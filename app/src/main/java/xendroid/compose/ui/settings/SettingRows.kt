@@ -30,6 +30,7 @@ import xendroid.compose.driver.DriverPackageIO
 import xendroid.compose.driver.DriverPackageInstaller
 import xendroid.compose.settings.Setting
 import xendroid.compose.settings.SettingsHost
+import xendroid.compose.ui.design.controllerLeaves
 
 @Composable
 fun SettingRow(host: SettingsHost, s: Setting, modified: Boolean, raw: String? = null) {
@@ -792,7 +793,7 @@ internal fun DriverSourcesDialog(sources: List<String>, onChange: (List<String>)
                     singleLine = true,
                     isError = problem != null,
                     supportingText = problem?.let { { Text(it) } },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().controllerLeaves { input.isEmpty() },
                 )
                 TextButton(onClick = {
                     val (next, result) = xendroid.compose.driver.DriverSources.add(sources, input)
@@ -954,7 +955,7 @@ private fun TextRow(host: SettingsHost, s: Setting.Text, modified: Boolean) {
             onValueChange = { text = it; host.onTextChanged(s, it) },
             singleLine = true,
             placeholder = { Text(s.placeholder) },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().controllerLeaves { text.isEmpty() },
         )
     }
 }
