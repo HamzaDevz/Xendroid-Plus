@@ -10,8 +10,6 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusGroup
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -96,8 +94,7 @@ fun XdSheet(
             if (!inside.get()) focus.moveFocus(androidx.compose.ui.focus.FocusDirection.Next)
         }
         BoxWithConstraints(
-            Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.58f))
-                .clickable(remember = MutableInteractionSource(), indication = null) { if (dismissible) onDismiss() },
+            Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.58f)).tapOnly { if (dismissible) onDismiss() },
         ) {
             val landscape = maxWidth > maxHeight
             val maxW = if (wide) 660.dp else 560.dp
@@ -112,11 +109,11 @@ fun XdSheet(
                     .clip(shape)
                     .background(c.solid(c.sheet))
                     .border(1.dp, Color.White.copy(alpha = 0.06f), shape)
-                    .clickable(remember = MutableInteractionSource(), indication = null) {}
+                    .tapOnly {}
                     .onFocusChanged { inside.set(it.hasFocus) }
-                    // Used by touch, nothing takes the focus as the sheet opens (a text field would
-                    // pop the keyboard up); with a controller the first control does.
-                    .then(if (c.controller) Modifier else Modifier.noInitialFocus())
+                    // By touch nothing takes the focus as the sheet opens (the screen is in touch
+                    // mode, where Android gives no first focus), so no text field raises the
+                    // keyboard; a controller, out of touch mode, can always move in.
                     .then(if (landscape) Modifier else Modifier.navigationBarsPadding())
                     .imePadding()
                     .verticalScroll(rememberScrollState())
@@ -126,8 +123,11 @@ fun XdSheet(
                 if (title != null) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(title, style = XdText.sheetTitle, color = c.fg, modifier = Modifier.weight(1f))
-                        // With a controller, B closes: the X would only be the first stop of the focus.
-                        if (closeButton && dismissible && !c.controller) XdIconButton(XdIcons.x, null, onDismiss)
+                        // With a controller, B closes: the X would only be the first stop of the focus
+                        // (nearest the top, it took a controller's first press in the touch layout too).
+                        if (closeButton && dismissible && !c.controller) {
+                            XdIconButton(XdIcons.x, null, onDismiss, Modifier.focusProperties { canFocus = false })
+                        }
                     }
                     if (subtitle != null) Text(subtitle, style = XdText.note, color = c.fg3, modifier = Modifier.padding(top = 0.dp))
                 }
@@ -165,13 +165,14 @@ fun XdDialogEdgeToEdge() {
     }
 }
 
-private fun Modifier.clickable(remember: MutableInteractionSource, indication: Nothing?, onClick: () -> Unit): Modifier =
-    this.clickable(interactionSource = remember, indication = indication, onClick = onClick)
-
-/** Focus moves into this group only when asked for (a tap); the window's first focus stays out. */
-@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
-private fun Modifier.noInitialFocus(): Modifier =
-    this.focusProperties { enter = { androidx.compose.ui.focus.FocusRequester.Cancel } }.focusGroup()
+/**
+ * A tap target and nothing more (a scrim, which closes what is over it, and a panel's body, which
+ * keeps taps from the scrim): never a stop of the focus. As clickables they were one, invisible,
+ * around the controls: a controller's first press landed there, A on the scrim closed the sheet,
+ * and B only moved the focus out to them before it closed anything.
+ */
+internal fun Modifier.tapOnly(onClick: () -> Unit): Modifier =
+    this.focusProperties { canFocus = false }.clickable(interactionSource = null, indication = null, onClick = onClick)
 
 /** A choice inside a sheet: title, explanation, control at the end (the prototype's .opt). */
 @Composable
