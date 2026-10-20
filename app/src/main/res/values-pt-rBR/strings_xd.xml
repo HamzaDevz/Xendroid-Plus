@@ -25,4 +25,6 @@
     <string name="xd_undo">Desfazer</string>
     <string name="xd_hint_page">Página</string>
     <string name="xd_hint_jump">Pular 5</string>
+    <!-- %1$s: o botão do controle que volta, A ou B. -->
+    <string name="xd_exit_again">Aperte %1$s de novo para sair</string>
 </resources>
