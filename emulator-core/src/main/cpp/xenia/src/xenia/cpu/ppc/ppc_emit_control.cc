@@ -561,6 +561,9 @@ int InstrEmit_sc(PPCHIRBuilder& f, const InstrData& i) {
   // LEV=2 is to signify 'call import' from Xenia.
   // TODO(gibbed): syscalls!
   if (i.SC.LEV == 0) {
+    // The resume address, for the syscall handler.
+    f.StoreContext(offsetof(PPCContext, scratch),
+                   f.LoadConstantUint64(i.address + 4));
     f.CallExtern(f.builtins()->syscall_handler);
     return 0;
   }

@@ -1287,6 +1287,12 @@ bool XexModule::SetupLibraryImports(const std::string_view name,
 
     if (kernel_resolver) {
       kernel_export = kernel_resolver->GetExportByOrdinal(name, ordinal);
+      // A module that enters user mode runs guest code no module claims, and
+      // every call site has to be translated for it, so before precompiling.
+      if (kernel_export &&
+          std::strcmp(kernel_export->name, "KeCreateUserMode") == 0) {
+        processor_->EnableDynamicCode();
+      }
     } else if (user_module) {
       user_export_addr = user_module->GetProcAddressByOrdinal(ordinal);
     }
@@ -1434,6 +1440,30 @@ bool XexModule::SetupLibraryImports(const std::string_view name,
 
 bool XexModule::ContainsAddress(uint32_t address) {
   return address >= low_address_ && address < high_address_;
+}
+
+bool XexModule::GetPageSectionType(uint32_t address,
+                                   xex2_section_type* out_type) const {
+  if (!loaded_ || !base_address_ || address < base_address_ ||
+      address - base_address_ >= xex_security_info()->image_size) {
+    return false;
+  }
+  auto heap = memory()->LookupHeap(base_address_);
+  if (!heap) {
+    return false;
+  }
+  const uint32_t page = (address - base_address_) / heap->page_size();
+  auto sec_header = xex_security_info();
+  for (uint32_t i = 0, end = 0; i < sec_header->page_descriptor_count; i++) {
+    xex2_page_descriptor desc;
+    desc.value = xe::byte_swap(sec_header->page_descriptors[i].value);
+    end += desc.page_count;
+    if (page < end) {
+      *out_type = desc.info;
+      return true;
+    }
+  }
+  return false;
 }
 
 std::unique_ptr<Function> XexModule::CreateFunction(uint32_t address) {

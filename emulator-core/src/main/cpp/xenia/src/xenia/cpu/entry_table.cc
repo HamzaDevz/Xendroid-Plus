@@ -13,6 +13,7 @@
 
 #include "xenia/base/profiling.h"
 #include "xenia/base/threading.h"
+#include "xenia/cpu/function.h"
 
 namespace xe {
 namespace cpu {
@@ -105,6 +106,36 @@ void EntryTable::Delete(uint32_t address) {
   // doesnt this leak memory by not deleting the entry?
   map_.erase(address);
   ready_by_address_.erase(address);
+}
+
+std::vector<Function*> EntryTable::DeleteRange(uint32_t start, uint32_t end) {
+  auto global_lock = global_critical_region_.Acquire();
+  std::vector<Function*> removed;
+  // No entry starting further below can reach into the range.
+  const uint32_t lowest_start =
+      start > max_ready_span_ ? start - max_ready_span_ : 0;
+  auto it = ready_by_address_.lower_bound(lowest_start);
+  while (it != ready_by_address_.end() && it->first <= end) {
+    Entry* entry = it->second;
+    if (entry->end_address < start) {
+      ++it;
+      continue;
+    }
+    // An import thunk or a save/restore helper keeps what the loader set up
+    // for it: the guest writes no code over one, and compiled again it would
+    // come back without its handler or saverest metadata.
+    if (entry->function &&
+        entry->function->behavior() != Function::Behavior::kDefault) {
+      ++it;
+      continue;
+    }
+    // Left allocated, like Delete does: code that is already running holds
+    // pointers into it and only the next lookup needs to miss.
+    removed.push_back(entry->function);
+    map_.erase(entry->address);
+    it = ready_by_address_.erase(it);
+  }
+  return removed;
 }
 
 std::vector<Function*> EntryTable::FindWithAddress(uint32_t address) {

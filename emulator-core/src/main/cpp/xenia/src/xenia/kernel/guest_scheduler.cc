@@ -98,6 +98,17 @@ static constexpr uint32_t kMaxIrqlPreemptDefers = 4096;
 // Reporting threshold for the lock case, which is never forced.
 static constexpr uint32_t kLockPreemptDeferReport = 65536;
 
+// The IRQL a watchdog report shows for a running thread, read from its KPCR
+// unless it runs user code, where r13 is not the KPCR.
+static std::string WatchdogIrql(XThread* thread) {
+  if (thread->user_mode() && thread->user_mode()->in_user_code) {
+    return "user";
+  }
+  auto* context = thread->thread_state()->context();
+  auto* kpcr = context->TranslateVirtualGPR<X_KPCR*>(context->r[13]);
+  return std::to_string(uint32_t(kpcr->current_irql));
+}
+
 // JIT safepoint handler. The cold path cleared the flag, so the deferred
 // cases re-set it to retry at the next safepoint.
 static void PreemptCurrentFiber(void* /*raw_context*/) {
@@ -127,8 +138,11 @@ static void PreemptCurrentFiber(void* /*raw_context*/) {
   // this one, so honoring the mask indefinitely livelocks. Defer a bounded
   // number of times, then switch anyway - IRQL still orders guest APCs.
   auto* kpcr = context->TranslateVirtualGPR<X_KPCR*>(context->r[13]);
+  // User code runs at PASSIVE_LEVEL and its r13 is not the KPCR.
+  const bool in_user_code =
+      self->user_mode() && self->user_mode()->in_user_code;
   bool forced_at_irql = false;
-  if (kpcr->current_irql >= 2) {
+  if (!in_user_code && kpcr->current_irql >= 2) {
     if (++links.preempt_defers_irql < kMaxIrqlPreemptDefers) {
       context->preempt_requested = 1;
       return;
@@ -145,11 +159,19 @@ static void PreemptCurrentFiber(void* /*raw_context*/) {
     }
   }
   links.preempt_defers_irql = 0;
+  // Where the console would interrupt user code, saving its CR in the trap
+  // frame, which code running meanwhile may change.
+  if (in_user_code) {
+    self->SaveInterruptedUserCr();
+  }
   // Involuntary quantum end, so no yield to a lower-priority thread - except
   // on the forced path, where the whole point is to reach a holder the strict
   // priority order would keep queued behind us.
   self->kernel_state()->guest_scheduler()->YieldCurrentThread(true,
                                                               forced_at_irql);
+  if (in_user_code) {
+    self->RestoreInterruptedUserCr();
+  }
 }
 
 // Spin-backoff hook. A collapsed guest spin-wait calls this instead of
@@ -751,7 +773,7 @@ bool GuestScheduler::TerminateThread(XThread* thread) {
 
 void GuestScheduler::SwitchTo(XThread* next) {
   assert_not_null(next);
-  assert_not_null(next->fiber());
+  assert_not_null(next->dispatch_fiber());
   auto& links = next->scheduler_links();
   if (!links.has_run) {
     links.has_run = true;
@@ -778,7 +800,7 @@ void GuestScheduler::SwitchTo(XThread* next) {
   // A flag raised while this fiber was off-CPU is stale, the dispatcher
   // already served it. A raise racing this clear is restored by the watchdog.
   next->thread_state()->context()->preempt_requested = 0;
-  next->fiber()->SwitchTo();
+  next->dispatch_fiber()->SwitchTo();
   // Back on the idle fiber.
   {
     std::lock_guard<std::mutex> lock(lock_);
@@ -1727,13 +1749,14 @@ void GuestScheduler::ReportNoProgress() {
     Cpu& cpu = cpus_[i];
     if (XThread* running = cpu.current_thread) {
       auto* context = running->thread_state()->context();
-      auto* kpcr = context->TranslateVirtualGPR<X_KPCR*>(context->r[13]);
+      // In user code r13 is not the KPCR, and the membase is user mode's.
+      const std::string irql = WatchdogIrql(running);
       XELOGW(
           "  CPU {} running tid={:08X} '{}' last_safepoint={:08X} lr={:08X} "
           "irql={} preempt_requested={} ready_summary={:#x}",
           i, running->thread_id(), running->thread_name(),
           uint32_t(context->last_safepoint_pc), uint32_t(context->lr),
-          uint32_t(kpcr->current_irql),
+          irql,
           uint32_t(context->preempt_requested),
           cpu.ready_summary.load(std::memory_order_relaxed));
     } else {
@@ -1852,7 +1875,8 @@ void GuestScheduler::WatchdogLoop() {
       }
       stall_reported_[i] = true;
       auto* context = running->thread_state()->context();
-      auto* kpcr = context->TranslateVirtualGPR<X_KPCR*>(context->r[13]);
+      // In user code r13 is not the KPCR, and the membase is user mode's.
+      const std::string irql = WatchdogIrql(running);
       XELOGW(
           "GuestScheduler: CPU {} has not switched fibers in {} watchdog "
           "ticks. Running tid={:08X} '{}' last_safepoint={:08X} lr={:08X} "
@@ -1860,7 +1884,7 @@ void GuestScheduler::WatchdogLoop() {
           "ready_summary={:#x}",
           i, stall_ticks_[i], running->thread_id(), running->thread_name(),
           uint32_t(context->last_safepoint_pc), uint32_t(context->lr),
-          uint32_t(kpcr->current_irql),
+          irql,
           uint32_t(context->preempt_requested),
           running->scheduler_links().preempt_defers_irql,
           running->scheduler_links().preempt_defers_lock,

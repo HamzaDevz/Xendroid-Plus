@@ -11,10 +11,13 @@
 #define XENIA_CPU_BACKEND_A64_A64_BACKEND_H_
 
 #include <atomic>
+#include <cstddef>
 #include <memory>
+#include <vector>
 
 #include "xenia/base/bit_map.h"
 #include "xenia/base/cvar.h"
+#include "xenia/base/mutex.h"
 #include "xenia/cpu/backend/backend.h"
 
 namespace xe {
@@ -59,8 +62,29 @@ struct ReserveHelper {
 struct A64BackendStackpoint {
   uint64_t host_stack_;
   unsigned guest_stack_;
+  // Guest lr at the prolog, which a dynamic code return matches against.
   unsigned guest_return_address_;
 };
+
+// Which lookups take a dynamic call cache entry.
+enum A64DynamicCallCacheKind : uint32_t {
+  kA64DynamicCallAny = 0,
+  // Cached by a direct call, which skips the return site checks a branch to
+  // the same address needs.
+  kA64DynamicCallDirectOnly = 1,
+};
+// A resolved guest address that has no indirection slot.
+struct A64DynamicCallCacheEntry {
+  uint32_t guest_address;
+  uint32_t kind;
+  uint64_t host_address;
+};
+constexpr uint32_t kA64DynamicCallCacheSize = 4096;
+// EmitDynamicCallLookup indexes and loads these itself.
+static_assert(sizeof(A64DynamicCallCacheEntry) == 16);
+static_assert(offsetof(A64DynamicCallCacheEntry, kind) == 4);
+static_assert(offsetof(A64DynamicCallCacheEntry, host_address) == 8);
+static_assert((kA64DynamicCallCacheSize & (kA64DynamicCallCacheSize - 1)) == 0);
 
 uint32_t FindStackpointSyncDepth(const A64BackendStackpoint* stackpoints,
                                  uint32_t current_depth, uint32_t guest_sp);
@@ -86,6 +110,8 @@ struct A64BackendContext {
   uint64_t cached_reserve_value_;
   uint64_t* guest_tick_count;
   A64BackendStackpoint* stackpoints;
+  // allocated by the first dynamic call resolve on this thread
+  A64DynamicCallCacheEntry* dynamic_call_cache;
   // address of the live reservation, and its granule generation when taken
   uint32_t reserve_address;
   uint32_t reserve_generation;
@@ -114,9 +140,9 @@ struct A64BackendContext {
   uint64_t code_cache_execute_base;
   uint64_t external_indirection_table_base;
 };
-// Lives in the 256 bytes that cpu/thread_state.cc allocates before each
+// Lives in the bytes that cpu/thread_state.cc allocates before each
 // PPCContext.
-static_assert(sizeof(A64BackendContext) <= 256);
+static_assert(sizeof(A64BackendContext) <= kBackendContextReserve);
 
 // Default FPCR for FPU mode (round to nearest, no flush to zero).
 constexpr unsigned int DEFAULT_FPU_FPCR = 0;
@@ -170,6 +196,11 @@ class A64Backend : public Backend {
   void InitializeBackendContext(void* ctx) override;
   void DeinitializeBackendContext(void* ctx) override;
   void PrepareForReentry(void* ctx) override;
+  void InvalidateDynamicCalls(uint32_t start, uint32_t end) override;
+  static A64BackendStackpoint* AllocStackpoints();
+  void* CreateStackpointState() override;
+  void DestroyStackpointState(void* state) override;
+  void SwapStackpointState(void* ctx, void* state) override;
 
   A64BackendContext* BackendContextForGuestContext(void* ctx) {
     return reinterpret_cast<A64BackendContext*>(
@@ -206,6 +237,11 @@ class A64Backend : public Backend {
   bool ExceptionCallback(Exception* ex);
 
   uintptr_t capstone_handle_ = 0;
+
+  // Every live guest context, so code the guest overwrites can be forgotten on
+  // the threads that cached it rather than only on the one that wrote it.
+  xe::global_critical_region global_critical_region_;
+  std::vector<void*> backend_contexts_;
 
   std::unique_ptr<A64CodeCache> code_cache_;
   uintptr_t emitter_data_ = 0;
