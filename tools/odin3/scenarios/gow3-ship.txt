@@ -1,0 +1,33 @@
+# Gears of War 3 up to the first walk through the ship, left running for prof.sh (KEEP=1)
+# (scenario gow3.txt without its walk segment)
+rom Gears of War 3 (World) (En,Fr,Pt,Zh,Ko,Pl,Ru,Cs,Hu).iso
+title 4D5308AB
+wait 45
+btn a
+wait 4
+btn a
+wait 6
+shot title
+btn start
+wait 12
+btn a
+wait 6
+shot menu
+# Campaign, Standard, New, Normal
+btn a
+wait 3
+btn a
+wait 3
+btn a
+wait 4
+btn a
+wait 40
+shot cutscene
+measure cutscene
+wait 20
+end
+wait 20
+shot ship
+measure ship-still
+wait 20
+end

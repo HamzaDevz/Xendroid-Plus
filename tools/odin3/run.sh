@@ -7,6 +7,8 @@
 #   TARGET      frame rate the game aims for, for the slow-frame count (default 30)
 #   CONFIG      "Section.key=value ...": lines for the title's per-game config for this run only (A/B runs);
 #               the title's own config is restored at the end
+#   PATCHES=1   the game patches in patches/ (Unlock FPS...) are in the app's patches folder for this run;
+#               otherwise they are taken out of it
 #   KEEP=1      leave the game running at the end
 #   HOLD=1      keep the lock for the next run of a series (the series releases it)
 #   LOCK_OWNER  owner in the shared Odin lock (default xbox360)
@@ -41,7 +43,9 @@ focused() { $A shell dumpsys window | grep mCurrentFocus | grep -q "$PKG/$ACT"; 
 pad() { focused || { echo "ABORT: the game lost the focus" | tee -a $OUT/summary.txt; exit 1; }; $A shell sh $T/pad.sh "$@"; }
 shot() {
   print "$1 $($A shell date +%T.%N | cut -c1-12)" >> $OUT/shots.txt
-  $A exec-out screencap -p > $OUT/$1.png && sips -Z 960 $OUT/$1.png --out $OUT/$1.png >/dev/null
+  # With the HDMI dock screencap prints a multiple-displays warning before the PNG
+  $A exec-out screencap -p | python3 -I -c 'import sys; d = sys.stdin.buffer.read(); sys.stdout.buffer.write(d[d.find(b"\x89PNG"):])' \
+    > $OUT/$1.png && sips -Z 960 $OUT/$1.png --out $OUT/$1.png >/dev/null
 }
 
 $A shell mkdir -p $T
@@ -72,12 +76,17 @@ for i in $(seq 90); do
   sleep 2
 done
 $A shell appops set $PKG MANAGE_EXTERNAL_STORAGE allow 2>/dev/null
+$A shell mkdir -p $DATA/patches
+for p in $D/patches/*.patch.toml(N); do
+  if [ "$PATCHES" = 1 ]; then $A push $p "$DATA/patches/" >/dev/null; else $A shell "rm -f '$DATA/patches/${p:t}'"; fi
+done
 $A shell input keyevent KEYCODE_WAKEUP; $A shell wm dismiss-keyguard
-$A logcat -c
+# Never logcat -c: the log also holds Hamza's own sessions. This run's lines are the ones after LC0.
+LC0=$($A shell date "'+%m-%d %H:%M:%S.000'" | tr -d '\r')
 $A shell "am start -n $PKG/$ACT -a xendroid.intent.action.xendroid --es game_uri '$ROMS/$ROM'" >/dev/null
 for i in $(seq 60); do focused && break; sleep 1; done
 focused || { echo "ABORT: the emulator never got the focus" | tee $OUT/summary.txt; exit 1; }
-echo "pkg=$PKG version=$($A shell dumpsys package $PKG | sed -n 's/.*versionName=//p' | head -1 | tr -d '\r') rom=$ROM config='$CONFIG' start=$(date +%T)" > $OUT/context.txt
+echo "pkg=$PKG version=$($A shell dumpsys package $PKG | sed -n 's/.*versionName=//p' | head -1 | tr -d '\r') rom=$ROM config='$CONFIG' patches=${PATCHES:-0} start=$(date +%T)" > $OUT/context.txt
 
 # The activity may have several SurfaceViews: the game's is the one that presents
 game_layer() {
@@ -92,7 +101,7 @@ SEG=""
 seg_begin() {
   SEG=$OUT/$1; mkdir -p $SEG
   [ -n "$LAYER" ] || LAYER=$(game_layer)
-  PID=$($A shell pidof $PKG:emu 2>/dev/null | tr -d '\r')
+  PID=$($A shell pidof ${PKG}:emu 2>/dev/null | tr -d '\r')
   $A shell "cat /proc/$PID/task/*/stat" > $SEG/threads_start.txt
   L0=$($A shell "wc -l < $DATA/xe.log" | tr -d '\r ')
   $A shell sh $T/poll.sh 3600 > $SEG/poll.csv &
@@ -125,4 +134,11 @@ step() {
 for line in "${(@f)$(<$SC)}"; do step ${=line%%\#*}; done
 [ -z "$SEG" ] || seg_end
 $A shell "tail -c 4000000 $DATA/xe.log" > $OUT/xe.log
+# The app's logcat lines and the crashes Android kept, since the launch
+PIDS=$($A shell pidof ${PKG}:emu ${PKG} | tr -d '\r' | sed 's/ /|/g')
+$A logcat -d -T "$LC0" 2>/dev/null | grep -a -E "$PKG| (${PIDS:-none}) " > $OUT/logcat.txt
+for t in data_app_native_crash data_app_anr; do
+  $A shell dumpsys dropbox --print $t 2>/dev/null | grep -a -B2 -A40 "Process: $PKG"
+done > $OUT/crashes.txt
+[ -s $OUT/crashes.txt ] || rm -f $OUT/crashes.txt
 focused || echo "WARNING: the emulator no longer has the focus (crash?)" | tee -a $OUT/summary.txt
