@@ -41,8 +41,10 @@ jobs:
     - name: Python syntax
       run: python3 -m py_compile tools/*.py tools/ir3_offline/*.py
 
-    - name: Release notes script
-      run: python3 tools/release_notes_test.py
+    - name: Release scripts
+      run: |
+        python3 tools/release_notes_test.py
+        python3 tools/release_version_test.py
 
     - name: JNI bindings
       run: |

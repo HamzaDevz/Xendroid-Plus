@@ -1,5 +1,7 @@
 package xendroid.compose.ui.design
 
+import android.view.InputDevice
+import android.view.KeyEvent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
@@ -46,12 +48,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -306,7 +316,7 @@ fun XdSearchField(
                 textStyle = XdText.body.copy(color = c.fg),
                 cursorBrush = SolidColor(c.acc),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused },
+                modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }.controllerLeaves { value.isEmpty() },
             )
         }
         if (value.isNotEmpty()) {
@@ -345,8 +355,56 @@ fun XdTextInput(
         BasicTextField(
             value = value, onValueChange = onValueChange, singleLine = true, enabled = enabled,
             textStyle = style.copy(color = c.fg), cursorBrush = SolidColor(c.acc),
-            modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused },
+            modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }.controllerLeaves { value.isEmpty() },
         )
+    }
+}
+
+/**
+ * For a text field: a controller that lands in it can always get out. Compose lets the D-pad out
+ * of a text field only when its keys come from a D-pad device, and most controllers' D-pads are a
+ * hat axis whose keys come from the joystick: the field kept them as cursor moves, and the focus
+ * was stuck there. Here a controller's up and down leave a [singleLine] field (there is no other
+ * line to go to) or an empty one, and its left and right leave an empty field; a keyboard's
+ * arrows, the on-screen keyboard's too, still move the cursor. A controller's B (the Back
+ * [xendroid.compose.MainActivity] turns it into, or the pad's own Back) leaves the field too,
+ * closing the keyboard, where it used to leave the screen, or the app from the library; the
+ * phone's own Back is left alone. A (the D-pad's centre) shows the keyboard again.
+ */
+fun Modifier.controllerLeaves(singleLine: Boolean = true, isEmpty: () -> Boolean): Modifier = composed {
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    onPreviewKeyEvent { e ->
+        val native = e.nativeKeyEvent
+        // Not a keyboard's key (a source that is only the keyboard, as Compose's own D-pad
+        // handling reads it) nor one the on-screen keyboard sent.
+        val pad = native.device?.isVirtual != true && native.source != InputDevice.SOURCE_KEYBOARD
+        // In a sheet, a window of its own, A and B come as they are (only the app's window turns
+        // them into the D-pad's centre and Back), and are read as the system reads them there.
+        val back = native.keyCode == KeyEvent.KEYCODE_BUTTON_B ||
+            (e.key == Key.Back && native.isFromSource(InputDevice.SOURCE_GAMEPAD))
+        when {
+            back -> {
+                // Taken on release, as Back is, with its press kept from what is behind.
+                if (e.type == KeyEventType.KeyUp && !native.isCanceled) {
+                    keyboard?.hide()
+                    if (!focus.moveFocus(FocusDirection.Down) && !focus.moveFocus(FocusDirection.Up)) focus.clearFocus()
+                }
+                true
+            }
+            pad && (native.keyCode == KeyEvent.KEYCODE_BUTTON_A || e.key == Key.DirectionCenter) -> {
+                if (e.type == KeyEventType.KeyDown) keyboard?.show()
+                true
+            }
+            !pad || e.type != KeyEventType.KeyDown -> false
+            else -> when (e.key) {
+                Key.DirectionUp -> (singleLine || isEmpty()) && focus.moveFocus(FocusDirection.Up)
+                Key.DirectionDown -> (singleLine || isEmpty()) && focus.moveFocus(FocusDirection.Down)
+                Key.DirectionLeft -> isEmpty() && focus.moveFocus(FocusDirection.Left)
+                Key.DirectionRight -> isEmpty() && focus.moveFocus(FocusDirection.Right)
+                else -> false
+            }
+        }
     }
 }
 

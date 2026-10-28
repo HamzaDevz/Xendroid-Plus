@@ -146,6 +146,11 @@ class UpdateState(initial: UpdateResult? = null) {
     }
 }
 
+/** The SemVer of a published build ("1.2.0", "1.3.0-preview.88"); null for local and
+ *  test builds, which are named after their commit. */
+private val releaseVersion: String? =
+    BuildConfig.VERSION_NAME.takeIf { Regex("""\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?""").matches(it) }
+
 @Composable
 fun rememberUpdateState(initial: UpdateResult? = null): UpdateState = remember { UpdateState(initial) }
 
@@ -166,7 +171,7 @@ fun UpdateScreen(
     val scope = rememberCoroutineScope()
     val c = Xd.colors
     LaunchedEffect(Unit) { if (feed && checkOnOpen && state.result == null) state.check(context, scope) }
-    XdSingleScreen(title = stringResource(R.string.upd_title), subtitle = "v${BuildConfig.VERSION_CODE} · ${BuildConfig.VERSION_NAME.take(9)}",
+    XdSingleScreen(title = stringResource(R.string.upd_title), subtitle = "build ${BuildConfig.VERSION_CODE} · ${BuildConfig.BUILD_BASE_COMMIT.take(8)}",
         onBack = onBack, headIcon = XdIcons.download) {
         BoxWithConstraints {
             XdTwoColumns(maxWidth > 760.dp, left = {
@@ -174,8 +179,8 @@ fun UpdateScreen(
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         XdLogo(46.dp)
                         Column(Modifier.weight(1f)) {
-                            Text("${stringResource(R.string.app_name)} v${BuildConfig.VERSION_CODE}", style = XdText.h2, color = c.fg)
-                            val version = BuildConfig.VERSION_NAME.take(9)
+                            Text("${stringResource(R.string.app_name)} ${releaseVersion ?: "v${BuildConfig.VERSION_CODE}"}", style = XdText.h2, color = c.fg)
+                            val version = releaseVersion ?: BuildConfig.VERSION_NAME.take(9)
                             Text(if (!feed) stringResource(R.string.xd_up_hero_no_feed, version) else stringResource(R.string.xd_up_hero_line, version,
                                 channelText(updateChannel(context)), lastUpdateCheck(context)?.let {
                                     DateUtils.getRelativeTimeSpanString(it, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS).toString()

@@ -144,6 +144,19 @@ class CodeCacheBase : public CodeCache {
 
   bool has_indirection_table() { return indirection_table_base_ != nullptr; }
 
+  // The guest addresses that have indirection slots.
+  static constexpr uint32_t indirection_guest_base() {
+    return uint32_t(kIndirectionTableBase);
+  }
+  static constexpr uint32_t indirection_guest_size() {
+    return uint32_t(kIndirectionTableSize);
+  }
+  static constexpr bool HasIndirectionSlot(uint32_t guest_address) {
+    return guest_address >= indirection_guest_base() &&
+           guest_address - indirection_guest_base() + 4 <=
+               indirection_guest_size();
+  }
+
   // True when slots hold encoded rel32 + tagged-external values, false when
   // fixed allocation succeeded and slots hold raw 32-bit absolute addresses.
   bool encoded_indirection() const { return encoded_indirection_; }

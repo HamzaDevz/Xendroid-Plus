@@ -135,6 +135,32 @@ dword_result_t NtOpenFile_entry(
 }
 DECLARE_XBOXKRNL_EXPORT1(NtOpenFile, kFileSystem, kImplemented);
 
+// A synchronous handle uses its file position, marked -1, without an offset or
+// with FILE_USE_FILE_POINTER_POSITION (-2). An async handle needs an offset. A
+// write given FILE_WRITE_TO_END_OF_FILE (-1) appends at XFile::kEndOfFile. Any
+// other negative offset is invalid.
+static X_STATUS ResolveByteOffset(XFile* file, lpqword_t byte_offset_ptr,
+                                  bool is_write, uint64_t* out_byte_offset) {
+  *out_byte_offset = uint64_t(-1);
+  if (!byte_offset_ptr) {
+    return file->is_synchronous() ? X_STATUS_SUCCESS
+                                  : X_STATUS_INVALID_PARAMETER;
+  }
+  int64_t byte_offset = int64_t(uint64_t(*byte_offset_ptr));
+  if (byte_offset == -2 && file->is_synchronous()) {
+    return X_STATUS_SUCCESS;
+  }
+  if (byte_offset == -1 && is_write) {
+    *out_byte_offset = XFile::kEndOfFile;
+    return X_STATUS_SUCCESS;
+  }
+  if (byte_offset < 0) {
+    return X_STATUS_INVALID_PARAMETER;
+  }
+  *out_byte_offset = uint64_t(byte_offset);
+  return X_STATUS_SUCCESS;
+}
+
 dword_result_t NtReadFile_entry(dword_t file_handle, dword_t event_handle,
                                 lpvoid_t apc_routine_ptr, lpvoid_t apc_context,
                                 pointer_t<X_IO_STATUS_BLOCK> io_status_block,
@@ -149,18 +175,20 @@ dword_result_t NtReadFile_entry(dword_t file_handle, dword_t event_handle,
   }
 
   auto file = kernel_state()->object_table()->LookupObject<XFile>(file_handle);
+  uint64_t byte_offset = 0;
   if (!file) {
     result = X_STATUS_INVALID_HANDLE;
+  } else if (XSUCCEEDED(result)) {
+    result =
+        ResolveByteOffset(file.get(), byte_offset_ptr, false, &byte_offset);
   }
 
   if (XSUCCEEDED(result)) {
     if (true || file->is_synchronous()) {
       // Synchronous.
       uint32_t bytes_read = 0;
-      result = file->Read(
-          buffer.guest_address(), buffer_length,
-          byte_offset_ptr ? static_cast<uint64_t>(*byte_offset_ptr) : -1,
-          &bytes_read, apc_context);
+      result = file->Read(buffer.guest_address(), buffer_length, byte_offset,
+                          &bytes_read, apc_context);
       if (io_status_block) {
         io_status_block->status = result;
         io_status_block->information = bytes_read;
@@ -241,18 +269,20 @@ dword_result_t NtReadFileScatter_entry(
   }
 
   auto file = kernel_state()->object_table()->LookupObject<XFile>(file_handle);
+  uint64_t byte_offset = 0;
   if (!file) {
     result = X_STATUS_INVALID_HANDLE;
+  } else if (XSUCCEEDED(result)) {
+    result =
+        ResolveByteOffset(file.get(), byte_offset_ptr, false, &byte_offset);
   }
 
   if (XSUCCEEDED(result)) {
     if (true || file->is_synchronous()) {
       // Synchronous.
       uint32_t bytes_read = 0;
-      result = file->ReadScatter(
-          segment_array.guest_address(), length,
-          byte_offset_ptr ? static_cast<uint64_t>(*byte_offset_ptr) : -1,
-          &bytes_read, apc_context);
+      result = file->ReadScatter(segment_array.guest_address(), length,
+                                 byte_offset, &bytes_read, apc_context);
       if (io_status_block) {
         io_status_block->status = result;
         io_status_block->information = bytes_read;
@@ -330,8 +360,11 @@ dword_result_t NtWriteFile_entry(dword_t file_handle, dword_t event_handle,
 
   // Grab file.
   auto file = kernel_state()->object_table()->LookupObject<XFile>(file_handle);
+  uint64_t byte_offset = 0;
   if (!file) {
     result = X_STATUS_INVALID_HANDLE;
+  } else if (XSUCCEEDED(result)) {
+    result = ResolveByteOffset(file.get(), byte_offset_ptr, true, &byte_offset);
   }
 
   // Execute write.
@@ -340,10 +373,8 @@ dword_result_t NtWriteFile_entry(dword_t file_handle, dword_t event_handle,
     if (true || file->is_synchronous()) {
       // Synchronous request.
       uint32_t bytes_written = 0;
-      result = file->Write(
-          buffer.guest_address(), buffer_length,
-          byte_offset_ptr ? static_cast<uint64_t>(*byte_offset_ptr) : -1,
-          &bytes_written, apc_context);
+      result = file->Write(buffer.guest_address(), buffer_length, byte_offset,
+                           &bytes_written, apc_context);
 
       if (io_status_block) {
         io_status_block->status = result;
@@ -405,7 +436,8 @@ dword_result_t NtCreateIoCompletion_entry(lpdword_t out_handle,
                                           dword_t desired_access,
                                           lpvoid_t object_attribs,
                                           dword_t num_concurrent_threads) {
-  auto completion = new XIOCompletion(kernel_state());
+  auto completion =
+      object_ref<XIOCompletion>(new XIOCompletion(kernel_state()));
   if (out_handle) {
     *out_handle = completion->handle();
   }

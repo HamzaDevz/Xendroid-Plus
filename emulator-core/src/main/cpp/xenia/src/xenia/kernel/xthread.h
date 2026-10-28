@@ -13,6 +13,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "xenia/base/mutex.h"
 #if !XE_PLATFORM_WIN32
@@ -31,6 +32,9 @@
 #include "xenia/xbox.h"
 
 namespace xe {
+namespace cpu {
+class Function;
+}  // namespace cpu
 namespace kernel {
 
 constexpr fourcc_t kThreadSaveSignature = make_fourcc("THRD");
@@ -495,6 +499,88 @@ class XThread : public XObject, public cpu::Thread {
   // Create().
   xe::threading::Fiber* fiber() const { return fiber_.get(); }
 
+  // The fiber to dispatch, the user mode fiber while one is running.
+  xe::threading::Fiber* dispatch_fiber() const {
+    return active_fiber_ ? active_fiber_ : fiber_.get();
+  }
+  void set_active_fiber(xe::threading::Fiber* fiber) { active_fiber_ = fiber; }
+
+  // Guest user mode state, created by the first KeEnterUserMode.
+  struct UserMode {
+    // A host stack that user code runs on. The kernel services a trap by
+    // leaving user mode and entering again at the instruction after it, so a
+    // fiber parked in a trap keeps its host call frames for that resume.
+    struct UserFiber {
+      std::unique_ptr<xe::threading::Fiber> fiber;
+      // Backend stackpoint record for this stack.
+      void* stackpoint_state = nullptr;
+      // Where a fresh entry starts.
+      uint32_t entry_address = 0;
+      // Where the parked trap resumes, and the guest stack pointer it had.
+      uint32_t resume_address = 0;
+      uint32_t stack_pointer = 0;
+      // Set when the handler returned instead of leaving user mode.
+      bool handler_returned = false;
+    };
+    std::vector<std::unique_ptr<UserFiber>> fibers;
+    // Fibers parked in a trap, most recent last.
+    std::vector<UserFiber*> parked;
+    // The fiber user code last ran on.
+    UserFiber* running = nullptr;
+    // The fiber whose trap the handler is running for.
+    UserFiber* trapped = nullptr;
+    // Runs the trap handler, so leaving user mode from it leaves the trapped
+    // fiber's frames intact.
+    std::unique_ptr<xe::threading::Fiber> handler_fiber;
+    void* handler_stackpoint_state = nullptr;
+    // Stackpoint states exchanged into the context since the kernel entered
+    // user mode, exchanged back in reverse on leave.
+    std::vector<void*> swapped_stackpoint_states;
+    // Suspended in KeEnterUserMode while user code runs.
+    xe::threading::Fiber* kernel_fiber = nullptr;
+    // Owns kernel_fiber when the thread is not scheduler-managed.
+    std::unique_ptr<xe::threading::Fiber> adopted_fiber;
+    // Integer and control registers from KeEnterUserMode, restored on leave.
+    struct {
+      uint64_t r[32];
+      uint64_t ctr;
+      uint64_t lr;
+      uint32_t cr;
+      uint32_t xer;
+    } kernel_registers;
+    uint32_t handler = 0;
+    // Resolved once per handler rather than on every trap.
+    cpu::Function* handler_function = nullptr;
+    // Guest buffer the handler receives as the trapped register frame.
+    uint32_t kframes = 0;
+    // Guest buffer for the exception record a fault hands the handler.
+    uint32_t exception_record = 0;
+    uint32_t leave_value = 0;
+    // The trap frame its KTHREAD names, where the console saves interrupted
+    // user code. Code running while it is interrupted sets and clears CR bits
+    // in the frame, which it resumes with.
+    uint32_t interrupt_frame = 0;
+    // Laid out as the trap frame the user mode trap handler receives. XeFu
+    // changes the CR in it.
+    static constexpr uint32_t kInterruptFrameSize = 0x1C0;
+    static constexpr uint32_t kInterruptFrameCr = 0x1B0;
+    // The CR saved in the frame, to tell what was changed there.
+    uint32_t interrupted_cr = 0;
+    // Where KeEnterUserMode restarts the fiber after a dispatched fault.
+    bool restart_pending = false;
+    uint32_t restart_address = 0;
+    bool in_user_code = false;
+  };
+  UserMode* user_mode() const { return user_mode_.get(); }
+  // Saves the CR of the user code being interrupted in its trap frame.
+  void SaveInterruptedUserCr();
+  // Applies the CR bits changed in the trap frame since SaveInterruptedUserCr
+  // to the context, as returning to user code reloads CR from the frame.
+  void RestoreInterruptedUserCr();
+  void set_user_mode(std::unique_ptr<UserMode> user_mode) {
+    user_mode_ = std::move(user_mode);
+  }
+
   // Drops the self reference from Create and any surviving handle. The delete
   // point for a fiber thread, so the caller must ensure it is not executing.
   void ReclaimExited();
@@ -714,6 +800,8 @@ class XThread : public XObject, public cpu::Thread {
   // When the cooperative scheduler is active, the guest thread runs on this
   // fiber instead of its own host thread (cpu::Thread::thread_).
   std::unique_ptr<xe::threading::Fiber> fiber_;
+  xe::threading::Fiber* active_fiber_ = nullptr;
+  std::unique_ptr<UserMode> user_mode_;
   SchedulerLinks scheduler_links_;
   // Set by the first ReclaimExited so both terminal paths reclaim once.
   std::atomic<bool> self_reference_dropped_{false};

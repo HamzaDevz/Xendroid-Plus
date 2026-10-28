@@ -14,12 +14,14 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/string.h"
 #include "xenia/emulator.h"
+#include "xenia/kernel/guest_scheduler.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/user_profile.h"
 #include "xenia/kernel/xfile.h"
 #include "xenia/kernel/xobject.h"
 #include "xenia/vfs/devices/host_path_device.h"
 #include "xenia/vfs/devices/xcontent_container_device.h"
+#include "xenia/vfs/virtual_file_system.h"
 
 DECLARE_int32(license_mask);
 
@@ -250,6 +252,11 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(
     auto file_infos = xe::filesystem::ListFiles(package_root);
 
     for (const auto& file_info : file_infos) {
+      // An install or a save unpack cut short (.xd-install-, .xd-replaced-,
+      // .xd-unpack-, .xd-unpacked-) is no package.
+      if (xe::path_to_utf8(file_info.name).starts_with(".xd-")) {
+        continue;
+      }
       XCONTENT_AGGREGATE_DATA content_data;
       if (XSUCCEEDED(ReadContentHeaderFile(xe::path_to_utf8(file_info.name),
                                            xuid, title_id, content_type,
@@ -447,6 +454,20 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
                                      const XCONTENT_AGGREGATE_DATA& data,
                                      uint32_t& content_license,
                                      const uint32_t disc_number) {
+  // A save stored as the package file itself (copied in by hand, say) mounts
+  // read-only, so the title's writes to it would fail. It becomes the folder a
+  // title's own saves are first, if it can (else it opens read-only). That is
+  // file I/O: before the global lock, and off the guest's dispatch thread.
+  if (data.content_type == XContentType::kSavedGame) {
+    const std::filesystem::path save_path =
+        ResolvePackagePath(xuid, data, disc_number);
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(save_path, ec)) {
+      kernel_state_->guest_scheduler()->RunBlockingHostCall(
+          [this, &save_path]() { UnpackPackageFile(save_path); });
+    }
+  }
+
   auto global_lock = global_critical_region_.Acquire();
 
   if (open_packages_.count(string_key_insensitive(root_name))) {
@@ -487,6 +508,94 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
       {string_key_insensitive::create(root_name), package.release()});
 
   return X_ERROR_SUCCESS;
+}
+
+bool ContentManager::UnpackPackageFile(
+    const std::filesystem::path& package_path) {
+  std::lock_guard<std::mutex> unpack_lock(unpack_mutex_);
+  const std::string name = xe::path_to_utf8(package_path.filename());
+  const std::filesystem::path type_dir = package_path.parent_path();
+  // Built aside and swapped in only when complete.
+  const std::filesystem::path staging = type_dir / (".xd-unpack-" + name);
+  const std::filesystem::path old_file = type_dir / (".xd-unpacked-" + name);
+  std::error_code ec;
+  // Another open of the same save may have unpacked it meanwhile.
+  if (!std::filesystem::is_regular_file(package_path, ec) ||
+      unpack_failed_.count(xe::path_to_utf8(package_path))) {
+    return false;
+  }
+  // Room for the folder (and some slack), as an install wants.
+  const uint64_t package_size = std::filesystem::file_size(package_path, ec);
+  const std::filesystem::space_info space = std::filesystem::space(type_dir, ec);
+  if (ec || space.available < package_size + package_size / 10) {
+    XELOGE("Content: no room to unpack the package file {}", package_path);
+    unpack_failed_.insert(xe::path_to_utf8(package_path));
+    return false;
+  }
+  {
+    auto device =
+        vfs::XContentContainerDevice::CreateContentDevice("", package_path);
+    if (!device || !device->Initialize()) {
+      XELOGE("Content: cannot read the package file {}", package_path);
+      unpack_failed_.insert(xe::path_to_utf8(package_path));
+      return false;
+    }
+    std::filesystem::remove_all(staging, ec);
+    ec.clear();
+    std::filesystem::create_directories(staging, ec);
+    std::atomic<uint64_t> progress{0};
+    if (ec || vfs::VirtualFileSystem::ExtractContentFiles(
+                  device.get(), staging, progress) != X_STATUS_SUCCESS) {
+      XELOGE("Content: cannot unpack the package file {}", package_path);
+      std::filesystem::remove_all(staging, ec);
+      unpack_failed_.insert(xe::path_to_utf8(package_path));
+      return false;
+    }
+    // The header an installed package has: the listing reads the name there.
+    const std::filesystem::path header_base = type_dir.parent_path() /
+                                              kGameContentHeaderDirName /
+                                              type_dir.filename() / name;
+    if (!std::filesystem::exists(
+            header_base.parent_path() / (name + ".header"), ec)) {
+      vfs::VirtualFileSystem::ExtractContentHeader(device.get(), header_base);
+    }
+  }
+  // Outside the global critical region a title's thread may have replaced the
+  // save meanwhile.
+  if (!std::filesystem::is_regular_file(package_path, ec)) {
+    std::filesystem::remove_all(staging, ec);
+    return false;
+  }
+  std::filesystem::rename(package_path, old_file, ec);
+  if (ec) {
+    XELOGE("Content: cannot move the package file {} aside: {}", package_path,
+           ec.message());
+    std::filesystem::remove_all(staging, ec);
+    unpack_failed_.insert(xe::path_to_utf8(package_path));
+    return false;
+  }
+  std::filesystem::rename(staging, package_path, ec);
+  if (ec) {
+    XELOGE("Content: cannot put the unpacked {} in place: {}", package_path,
+           ec.message());
+    std::error_code back_ec;
+    std::filesystem::rename(old_file, package_path, back_ec);
+    if (back_ec) {
+      // Neither is in place, and the save can't open: keep both for the user.
+      XELOGE("Content: the package file stays at {}", old_file);
+    } else {
+      std::filesystem::remove_all(staging, back_ec);
+    }
+    unpack_failed_.insert(xe::path_to_utf8(package_path));
+    return false;
+  }
+  std::filesystem::remove(old_file, ec);
+  if (ec) {
+    XELOGW("Content: cannot remove {}: {}", old_file, ec.message());
+  }
+  XELOGI("Content: unpacked the package file {} so the title can write to it",
+         package_path);
+  return true;
 }
 
 X_RESULT ContentManager::CloseContent(const std::string_view root_name) {

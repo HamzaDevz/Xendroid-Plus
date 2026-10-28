@@ -203,7 +203,12 @@ int XexModule::ApplyPatch(XexModule* module) {
   xex2_opt_delta_patch_descriptor* patch_header = nullptr;
   GetOptHeader(XEX_HEADER_DELTA_PATCH_DESCRIPTOR,
                reinterpret_cast<void**>(&patch_header));
-  assert_not_null(patch_header);
+  if (!patch_header) {
+    // is_patch() only checks the module flags, so a malformed patch file can
+    // still lack the descriptor.
+    XELOGE("XEX patch has no delta patch descriptor");
+    return 1;
+  }
 
   uint32_t size = module->xex_header()->header_size;
   if (patch_header->delta_headers_source_offset > size) {
@@ -231,6 +236,17 @@ int XexModule::ApplyPatch(XexModule* module) {
                // though
   }
 
+  auto file_format_header = opt_file_format_info();
+  // Its window size and first block are read below. Checked before the base
+  // module's header changes.
+  if (!file_format_header ||
+      file_format_header->info_size <
+          offsetof(xex2_opt_file_format_info, compression_info) +
+              sizeof(xex2_file_normal_compression_info)) {
+    XELOGE("XEX patch has no compression info");
+    return 10;
+  }
+
   // Patch base XEX header
   uint32_t original_image_size = module->image_size();
   uint32_t header_target_size = patch_header->size_of_target_headers;
@@ -241,6 +257,28 @@ int XexModule::ApplyPatch(XexModule* module) {
   }
 
   size_t mem_size = module->xex_header_mem_.size();
+
+  // The header is patched grown to header_target_size: what the patch copies
+  // in it has to be inside that.
+  const uint64_t header_mem_size =
+      std::max(uint64_t(mem_size), uint64_t(header_target_size));
+  if (patch_header->delta_headers_source_offset &&
+      (uint64_t(patch_header->delta_headers_source_offset) +
+               patch_header->delta_headers_source_size >
+           header_mem_size ||
+       uint64_t(patch_header->delta_headers_target_offset) +
+               patch_header->delta_headers_source_size >
+           header_mem_size)) {
+    XELOGE("XEX patch copies header data outside the header");
+    return 11;
+  }
+  // The header patch's records follow the descriptor's fields, in its size.
+  constexpr uint32_t kHeaderPatchOffset =
+      offsetof(xex2_opt_delta_patch_descriptor, info);
+  if (patch_header->size < kHeaderPatchOffset) {
+    XELOGE("XEX patch descriptor is shorter than its fields");
+    return 11;
+  }
 
   // Increase xex header buffer length if needed
   if (header_target_size > module->xex_header_mem_.size()) {
@@ -265,15 +303,13 @@ int XexModule::ApplyPatch(XexModule* module) {
            module->xex_header_mem_.size() - header_target_size);
   }
 
-  auto file_format_header = opt_file_format_info();
-  assert_not_null(file_format_header);
-
   // Apply header patch...
-  uint32_t headerpatch_size = patch_header->size;
+  uint32_t headerpatch_size = patch_header->size - kHeaderPatchOffset;
 
   int result_code = lzxdelta_apply_patch(
       &patch_header->info, headerpatch_size,
-      file_format_header->compression_info.normal.window_size, header_ptr);
+      file_format_header->compression_info.normal.window_size, header_ptr,
+      module->xex_header_mem_.size());
   if (result_code) {
     XELOGE("XEX header patch application failed, error code {}", result_code);
     return result_code;
@@ -296,6 +332,20 @@ int XexModule::ApplyPatch(XexModule* module) {
   const bool base_moved = new_base_address != original_base_address;
 
   uint32_t new_image_size = module->image_size();
+
+  // What the image patch writes in: the old image, and the new one where it
+  // grew (allocated below).
+  const uint32_t image_span = std::max(original_image_size, new_image_size);
+  if (patch_header->delta_image_source_offset &&
+      (uint64_t(patch_header->delta_image_source_offset) +
+               patch_header->delta_image_source_size >
+           image_span ||
+       uint64_t(patch_header->delta_image_target_offset) +
+               patch_header->delta_image_source_size >
+           image_span)) {
+    XELOGE("XEX patch copies image data outside the image");
+    return 11;
+  }
 
   // Check if we need to alloc new memory for the patched xex
   if (base_moved || new_image_size > original_image_size) {
@@ -417,8 +467,19 @@ int XexModule::ApplyPatch(XexModule* module) {
   }
 
   uint8_t digest[0x14];
+  const uint8_t* const input_end = input_buffer + patch_length;
   // Now loop through each block and apply the delta patches inside
   while (cur_block->block_size) {
+    // As in ReadImageCompressed: the sizes come from the file, and the hashes
+    // don't stop a crafted one. A block (the next one's size and hash, then
+    // the delta) must be inside the patch data.
+    if (cur_block->block_size < sizeof(xex2_compressed_block_info) ||
+        cur_block->block_size > size_t(input_end - p)) {
+      XELOGE("XEX patch block of {} bytes does not fit in the {} left",
+             uint32_t(cur_block->block_size), size_t(input_end - p));
+      result_code = 10;
+      break;
+    }
     const auto* next_block = (const xex2_compressed_block_info*)p;
 
     // Compare block hash, if no match we probably used wrong decrypt key
@@ -439,7 +500,8 @@ int XexModule::ApplyPatch(XexModule* module) {
     // Apply delta patch
     result_code = lzxdelta_apply_patch(
         (xex2_delta_patch*)p, block_data_size,
-        file_format_header->compression_info.normal.window_size, base_exe);
+        file_format_header->compression_info.normal.window_size, base_exe,
+        image_span);
     if (result_code) {
       break;
     }
@@ -485,7 +547,8 @@ int XexModule::ApplyPatch(XexModule* module) {
 
 int XexModule::ReadImage(const void* xex_addr, size_t xex_length,
                          const uint8_t* key) {
-  if (!opt_file_format_info()) {
+  // The encryption and compression types follow the size.
+  if (!opt_file_format_info() || opt_file_format_info()->info_size < 8) {
     return 1;
   }
 
@@ -728,17 +791,37 @@ int XexModule::ReadImageCompressed(const void* xex_addr, size_t xex_length) {
   const auto* compression_info = &opt_file_format_info()->compression_info;
   const xex2_compressed_block_info* cur_block =
       &compression_info->normal.first_block;
+  if (opt_file_format_info()->info_size <
+      offsetof(xex2_opt_file_format_info, compression_info) +
+          sizeof(xex2_file_normal_compression_info)) {
+    if (free_input) {
+      free((void*)input_buffer);
+    }
+    return 4;
+  }
 
   compress_buffer = (uint8_t*)calloc(1, exe_length);
 
   p = input_buffer;
   d = compress_buffer;
+  const uint8_t* const input_end = input_buffer + input_size;
+  const uint8_t* const compress_end = compress_buffer + exe_length;
 
   // De-block.
   int result_code = 0;
 
   uint8_t block_calced_digest[0x14];
   while (cur_block->block_size) {
+    // The sizes come from the file, and a crafted one can carry hashes that
+    // match: a block (the next one's size and hash, then the chunks) and each
+    // chunk must be inside the data.
+    if (cur_block->block_size < sizeof(xex2_compressed_block_info) ||
+        cur_block->block_size > size_t(input_end - p)) {
+      XELOGE("XEX: compressed block of {} bytes does not fit in the {} left",
+             uint32_t(cur_block->block_size), size_t(input_end - p));
+      result_code = 4;
+      break;
+    }
     const uint8_t* pnext = p + cur_block->block_size;
     const auto* next_block = (const xex2_compressed_block_info*)p;
 
@@ -753,16 +836,26 @@ int XexModule::ReadImageCompressed(const void* xex_addr, size_t xex_length) {
     p += 4;
     p += 20;
 
-    while (true) {
+    while (pnext - p >= 2) {
       const size_t chunk_size = (p[0] << 8) | p[1];
       p += 2;
       if (!chunk_size) {
+        break;
+      }
+      if (chunk_size > size_t(pnext - p) ||
+          chunk_size > size_t(compress_end - d)) {
+        XELOGE("XEX: compressed chunk of {} bytes does not fit in its block",
+               chunk_size);
+        result_code = 4;
         break;
       }
 
       memcpy(d, p, chunk_size);
       p += chunk_size;
       d += chunk_size;
+    }
+    if (result_code) {
+      break;
     }
 
     p = pnext;
@@ -907,11 +1000,20 @@ bool XexModule::Load(const std::string_view name, const std::string_view path,
                      const void* xex_addr, size_t xex_length) {
   auto src_header = reinterpret_cast<const xex2_header*>(xex_addr);
 
+  if (xex_length < sizeof(src_header->magic)) {
+    return false;
+  }
   if (src_header->magic == kXEX1Signature) {
     xex_format_ = kFormatXex1;
   } else if (src_header->magic == kXEX2Signature) {
     xex_format_ = kFormatXex2;
   } else {
+    return false;
+  }
+
+  // Everything below reads the header as the file gives it.
+  if (const char* problem = XexHeaderProblem(xex_addr, xex_length)) {
+    XELOGE("XEX {}: {}", path, problem);
     return false;
   }
 
@@ -1185,6 +1287,12 @@ bool XexModule::SetupLibraryImports(const std::string_view name,
 
     if (kernel_resolver) {
       kernel_export = kernel_resolver->GetExportByOrdinal(name, ordinal);
+      // A module that enters user mode runs guest code no module claims, and
+      // every call site has to be translated for it, so before precompiling.
+      if (kernel_export &&
+          std::strcmp(kernel_export->name, "KeCreateUserMode") == 0) {
+        processor_->EnableDynamicCode();
+      }
     } else if (user_module) {
       user_export_addr = user_module->GetProcAddressByOrdinal(ordinal);
     }
@@ -1332,6 +1440,30 @@ bool XexModule::SetupLibraryImports(const std::string_view name,
 
 bool XexModule::ContainsAddress(uint32_t address) {
   return address >= low_address_ && address < high_address_;
+}
+
+bool XexModule::GetPageSectionType(uint32_t address,
+                                   xex2_section_type* out_type) const {
+  if (!loaded_ || !base_address_ || address < base_address_ ||
+      address - base_address_ >= xex_security_info()->image_size) {
+    return false;
+  }
+  auto heap = memory()->LookupHeap(base_address_);
+  if (!heap) {
+    return false;
+  }
+  const uint32_t page = (address - base_address_) / heap->page_size();
+  auto sec_header = xex_security_info();
+  for (uint32_t i = 0, end = 0; i < sec_header->page_descriptor_count; i++) {
+    xex2_page_descriptor desc;
+    desc.value = xe::byte_swap(sec_header->page_descriptors[i].value);
+    end += desc.page_count;
+    if (page < end) {
+      *out_type = desc.info;
+      return true;
+    }
+  }
+  return false;
 }
 
 std::unique_ptr<Function> XexModule::CreateFunction(uint32_t address) {

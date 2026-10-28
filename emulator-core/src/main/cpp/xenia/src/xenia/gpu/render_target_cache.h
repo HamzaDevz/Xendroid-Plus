@@ -298,6 +298,26 @@ class RenderTargetCache {
   uint32_t GetLastUpdateBoundRenderTargets(
       uint32_t* depth_and_color_formats_out = nullptr) const;
 
+  // Records the render target the last update draws into (the first bound
+  // color one, else depth) as drawn in `frame`, and returns whether it was also
+  // drawn in one of the kDrawTargetRecurringFrames frames before - telling a
+  // pass redrawn every frame from a one-off render to a texture, for draws
+  // whose pipeline is still being created. True with no render target, as
+  // nothing is kept then. Call once per draw, after Update.
+  static constexpr uint64_t kDrawTargetRecurringFrames = 4;
+  bool TrackLastUpdateDrawTarget(uint64_t frame);
+  // Whether the last update's render target is at most
+  // kDrawTargetSmallPitchTiles wide (160 pixels without MSAA) - generated data
+  // like impostors or lookup tables, often kept past the frame even when
+  // redrawn every frame (4541094A's tree impostors).
+  static constexpr uint32_t kDrawTargetSmallPitchTiles = 2;
+  bool IsLastUpdateDrawTargetSmall() const {
+    return !last_update_draw_target_.IsEmpty() &&
+           last_update_draw_target_.pitch_tiles_at_32bpp <=
+               kDrawTargetSmallPitchTiles;
+  }
+  std::string GetLastUpdateDrawTargetName() const;
+
  protected:
   RenderTargetCache(const RegisterFile& register_file, const Memory& memory,
                     TraceWriter* trace_writer, uint32_t draw_resolution_scale_x,
@@ -929,6 +949,19 @@ class RenderTargetCache {
   // transfers gathered outside a draw, like before a resolve clear.
   RenderTargetKey
       last_update_blend_reading_color_rts_[xenos::kMaxColorRenderTargets];
+  // See TrackLastUpdateDrawTarget.
+  RenderTargetKey last_update_draw_target_;
+  // The latest frame each render target was drawn in, and the one before it,
+  // 0 for never.
+  std::unordered_map<RenderTargetKey, std::pair<uint64_t, uint64_t>,
+                     RenderTargetKey::Hasher>
+      draw_target_last_frames_;
+  // The target and frame TrackLastUpdateDrawTarget saw last, so that the draws
+  // after the first into a target in a frame don't look it up again, and what
+  // it returned for them.
+  RenderTargetKey draw_target_tracked_;
+  uint64_t draw_target_tracked_frame_ = 0;
+  bool draw_target_tracked_recurring_ = true;
   // Render targets used by the draw call with the last successful update or
   // previous updates, unless a different or a totally new one was bound (or
   // surface info was changed), to avoid unneeded render target switching (which

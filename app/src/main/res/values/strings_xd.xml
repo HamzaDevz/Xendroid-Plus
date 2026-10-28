@@ -25,4 +25,6 @@
     <string name="xd_undo">Undo</string>
     <string name="xd_hint_page">Page</string>
     <string name="xd_hint_jump">Jump 5</string>
+    <!-- %1$s: the controller button that goes back, A or B. -->
+    <string name="xd_exit_again">Press %1$s again to exit</string>
 </resources>

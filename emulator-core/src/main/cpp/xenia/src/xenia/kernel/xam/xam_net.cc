@@ -546,12 +546,20 @@ dword_result_t XNetLogonGetTitleID_entry(dword_t caller, lpvoid_t params) {
 }
 DECLARE_XAM_EXPORT1(XNetLogonGetTitleID, kNetworking, kImplemented);
 
-void NetDll_XNetInAddrToString_entry(dword_t caller, dword_t in_addr,
-                                     lpstring_t string_out,
-                                     dword_t string_size) {
-  strncpy(string_out, "666.666.666.666", string_size);
+dword_result_t NetDll_XNetInAddrToString_entry(dword_t caller, dword_t in_addr,
+                                               lpstring_t string_out,
+                                               dword_t string_size) {
+  const std::string text =
+      fmt::format("{}.{}.{}.{}", in_addr >> 24, (in_addr >> 16) & 0xFF,
+                  (in_addr >> 8) & 0xFF, in_addr & 0xFF);
+  if (string_out && string_size) {
+    const size_t count = std::min<size_t>(text.size(), string_size - 1);
+    std::memcpy(string_out, text.data(), count);
+    string_out[count] = '\0';
+  }
+  return 0;
 }
-DECLARE_XAM_EXPORT1(NetDll_XNetInAddrToString, kNetworking, kStub);
+DECLARE_XAM_EXPORT1(NetDll_XNetInAddrToString, kNetworking, kImplemented);
 
 // This converts a XNet address to an IN_ADDR. The IN_ADDR is used for
 // subsequent socket calls (like a handle to a XNet address)
@@ -753,6 +761,9 @@ dword_result_t NetDll_setsockopt_entry(dword_t caller, dword_t socket_handle,
   }
 
   X_STATUS status = socket->SetOption(level, optname, optval_ptr, optlen);
+  if (XFAILED(status)) {
+    XThread::SetLastError(socket->GetLastWSAError());
+  }
   int result = XSUCCEEDED(status) ? 0 : -1;
   XELOGI("NetDll_setsockopt: {}, returning {}",
          XSUCCEEDED(status) ? "success" : "failed", result);
@@ -770,9 +781,18 @@ dword_result_t NetDll_getsockopt_entry(dword_t caller, dword_t socket_handle,
     return -1;
   }
 
+  if (!optval_ptr || !optlen) {
+    XThread::SetLastError(uint32_t(X_WSAError::X_WSAEFAULT));
+    return -1;
+  }
   uint32_t native_len = *optlen;
   X_STATUS status = socket->GetOption(level, optname, optval_ptr, &native_len);
-  return XSUCCEEDED(status) ? 0 : -1;
+  if (XFAILED(status)) {
+    XThread::SetLastError(socket->GetLastWSAError());
+    return -1;
+  }
+  *optlen = native_len;
+  return 0;
 }
 DECLARE_XAM_EXPORT1(NetDll_getsockopt, kNetworking, kImplemented);
 
@@ -874,7 +894,8 @@ DECLARE_XAM_EXPORT1(NetDll_listen, kNetworking, kImplemented);
 dword_result_t NetDll_accept_entry(dword_t caller, dword_t socket_handle,
                                    pointer_t<XSOCKADDR> addr_ptr,
                                    lpdword_t addrlen_ptr) {
-  if (!addr_ptr) {
+  // The address is optional but one asked for needs room.
+  if (addr_ptr && (!addrlen_ptr || *addrlen_ptr < sizeof(XSOCKADDR))) {
     XThread::SetLastError(uint32_t(X_WSAError::X_WSAEFAULT));
     return -1;
   }
@@ -886,14 +907,17 @@ dword_result_t NetDll_accept_entry(dword_t caller, dword_t socket_handle,
     return -1;
   }
 
-  N_XSOCKADDR native_addr(addr_ptr);
-  int native_len = *addrlen_ptr;
-  auto new_socket = socket->Accept(&native_addr, &native_len);
+  N_XSOCKADDR native_addr;
+  int native_len = sizeof(native_addr);
+  auto new_socket =
+      socket->Accept(addr_ptr ? &native_addr : nullptr, &native_len);
   if (new_socket) {
-    addr_ptr->address_family = native_addr.address_family;
-    std::memcpy(addr_ptr->sa_data, native_addr.sa_data, *addrlen_ptr - 2);
-    *addrlen_ptr = native_len;
-
+    if (addr_ptr) {
+      addr_ptr->address_family = native_addr.address_family;
+      std::memcpy(addr_ptr->sa_data, native_addr.sa_data,
+                  sizeof(native_addr.sa_data));
+      *addrlen_ptr = native_len;
+    }
     return new_socket->handle();
   }
   XThread::SetLastError(socket->GetLastWSAError());

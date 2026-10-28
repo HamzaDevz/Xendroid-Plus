@@ -804,7 +804,10 @@ bool KernelState::IsPatchSignatureProper(
   patch_module->GetOptHeader(XEX_HEADER_DELTA_PATCH_DESCRIPTOR,
                              reinterpret_cast<void**>(&patch_header));
 
-  assert_not_null(patch_header);
+  if (!patch_header) {
+    XELOGE("XEX patch has no delta patch descriptor");
+    return false;
+  }
 
   // Compare hash inside delta descriptor to base XEX signature
   uint8_t digest[0x14];
@@ -835,12 +838,15 @@ X_RESULT KernelState::ApplyTitleUpdate(
     return X_STATUS_UNSUCCESSFUL;
   }
 
-  X_STATUS result =
+  // ApplyPatch fails with small positive codes, which XFAILED takes for
+  // success: the title would run with its module partly patched.
+  const int result =
       patch_module->xex_module()->ApplyPatch(title_module->xex_module());
-  if (result != X_STATUS_SUCCESS) {
+  if (result) {
     XELOGE("Failed to apply XEX patch, code: {}", result);
+    return X_STATUS_UNSUCCESSFUL;
   }
-  return result;
+  return X_STATUS_SUCCESS;
 }
 
 void KernelState::UnloadUserModule(const object_ref<UserModule>& module,

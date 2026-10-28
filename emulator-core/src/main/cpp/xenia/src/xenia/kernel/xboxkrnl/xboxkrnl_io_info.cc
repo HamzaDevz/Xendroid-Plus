@@ -7,11 +7,14 @@
  ******************************************************************************
  */
 
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/math.h"
 #include "xenia/kernel/info/file.h"
 #include "xenia/kernel/info/volume.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xboxkrnl/xboxkrnl_ob.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/kernel/xfile.h"
 #include "xenia/vfs/device.h"
@@ -228,8 +231,13 @@ dword_result_t NtSetInformationFile_entry(
     case XFileRenameInformation: {
       auto info = info_ptr.as<X_FILE_RENAME_INFORMATION*>();
       // Compute path, possibly attrs relative.
-      std::filesystem::path target_path =
+      std::string target_name =
           util::TranslateAnsiPath(kernel_memory(), &info->ansi_string);
+      // As NtCreateFile does for a name not relative to a directory handle.
+      if (!info->root_dir_handle) {
+        xeObStripDosDevicesPrefix(target_name);
+      }
+      std::filesystem::path target_path = target_name;
 
       // Place IsValidPath in path from where it can be accessed everywhere
       if (!IsValidPath(target_path.string(), false)) {
@@ -240,7 +248,7 @@ dword_result_t NtSetInformationFile_entry(
         return X_STATUS_INVALID_PARAMETER;
       }
 
-      file->Rename(target_path);
+      result = file->Rename(target_path, info->replace_existing != 0);
       out_length = sizeof(*info);
       break;
     }
@@ -261,11 +269,26 @@ dword_result_t NtSetInformationFile_entry(
     }
     case XFileAllocationInformation: {
       auto info = info_ptr.as<X_FILE_ALLOCATION_INFORMATION*>();
-      result = file->SetLength(info->allocation_size);
       out_length = sizeof(*info);
-
-      // Update the files vfs::Entry information
+      if (!(file->file_access() &
+            (xe::filesystem::FileAccess::kGenericWrite |
+             xe::filesystem::FileAccess::kFileWriteData))) {
+        result = X_STATUS_ACCESS_DENIED;
+        break;
+      }
+      // The allocation rounds up to whole allocation units. A larger one
+      // leaves the file size alone. A smaller one cuts the file to it.
+      auto device = file->device();
+      uint64_t allocation_size =
+          xe::round_up(uint64_t(info->allocation_size),
+                       uint64_t(device->sectors_per_allocation_unit()) *
+                           device->bytes_per_sector(),
+                       false);
       file->entry()->update();
+      if (allocation_size < file->entry()->size()) {
+        result = file->SetLength(allocation_size);
+        file->entry()->update();
+      }
       break;
     }
     case XFileEndOfFileInformation: {

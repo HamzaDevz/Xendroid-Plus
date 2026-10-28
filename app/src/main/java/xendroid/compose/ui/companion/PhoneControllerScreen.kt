@@ -70,6 +70,7 @@ import xendroid.compose.ui.design.XdNote
 import xendroid.compose.ui.design.XdSegmented
 import xendroid.compose.ui.design.XdSingleScreen
 import xendroid.compose.ui.design.XdText
+import xendroid.compose.ui.design.controllerLeaves
 import xendroid.compose.ui.rumbleLabel
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
@@ -177,7 +178,7 @@ private fun Input(value: String, onValue: (String) -> Unit, placeholder: String,
             value = value, onValueChange = onValue, singleLine = true, enabled = enabled,
             textStyle = style.copy(color = if (enabled) c.fg else c.fg3), cursorBrush = SolidColor(c.acc),
             keyboardOptions = KeyboardOptions(keyboardType = type),
-            modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused },
+            modifier = Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }.controllerLeaves { value.isEmpty() },
         )
     }
 }

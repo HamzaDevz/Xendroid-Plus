@@ -44,9 +44,13 @@ export function parseTag(tag) {
 function simplify(r, repo) {
   const tag = parseTag(r.tag_name);
   const apk = (r.assets || []).find(a => /\.apk$/i.test(a.name));
+  // Versão SemVer no nome das releases publicadas pelo CI ("Xendroid+ 1.2.0",
+  // "Xendroid+ 1.3.0-preview.88"; tools/release_version.py); as antigas têm o commit.
+  const version = /^Xendroid\+ (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/.exec((r.name || '').trim());
   return {
     tag: r.tag_name,
     name: r.name || r.tag_name,
+    version: version ? version[1] : null,
     build: tag.build,
     commit: /^[0-9a-f]{40}$/i.test(r.target_commitish || '') ? r.target_commitish.toLowerCase() : null,
     tagSha: tag.sha,

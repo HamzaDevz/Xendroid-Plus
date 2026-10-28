@@ -308,3 +308,20 @@ duas correções próprias.
 - **UBO dinâmico incondicional** (`bfca9b2d97`): o Xendroid+ mediu que o driver proprietário da
   Qualcomm lê zeros por esses descritores e só o liga no Turnip (`d9816ebe9`).
 - **D3D12, Metal, backend x64, UI desktop e CI.**
+
+## 8. Varredura incremental (2026-10-18)
+
+Os commits que saíram depois do recorte da seção 1. São 26 do xenia-edge (depois de `581ba93e7`,
+até `b5baa311a`) e 24 do Canary (depois de `b7350635b`, até `c28af1125`). Eles foram triados com o
+mesmo método da seção 2. Os 20 que entram viraram o lote 7.
+
+| Veredito | Commits |
+|---|---|
+| Portar | Canary: `ec884c8bb`, `dac2794ca`, `1d6e2dd59`, `b44716e66`, `26427bc72`, `a66d28cbd`, `50e9c715d`, `4c8482b63`, `c28af1125`. Edge: `ef74adbc7`, `7981a0f63`, `61dc2608a`, `24bd21793`, `2860617cb` (só a marcação em zero-copy), `6ca317f2e`, `c9d39b283`, `6f3029303`, `cb81e3530`, `9266d7e25`, `b5baa311a` |
+| Já tem | `f03a9fcfc` (NtOpenFile com share_access); `23bb55fed` (XamInputGetState já informa a conexão com a UI aberta); `cbb34a874` (o handler só pausa com debug); `992836fc0` (limites da compressão básica, desde o PR #45) |
+| Talvez | System Link: `4feb2cbd7`, `65435038b`, `44f4cc34f`, `644ba68fe`, `578f82ed0`, `3121ff998`, `81c8b2a09`. Fences retidos por memexport: `31a696a9a`, `409ca81a3` (o desenho de memexport daqui é outro). I/O de arquivo assíncrono: `af615b322`, `a4858cee1`, `ab84ce800`, `e4df59c99` e `976c3578b` (Canary) |
+| Não se aplica | `ecee0ce73` (aqui nenhum perfil entra na Live); `f05a74cfc` (XHttp não existe aqui); `b709f6655` (o snap de texel não veio, `c3cd8617b1` é Talvez); `b83593c24`, `716afa039`, `fbd0edfca`, `e735514da` (trace); `583528e8e` (fonte do ImGui no Linux); `5a782e497` (assert no Linux); `5cda71298`, `6d56dd869`, `dd0af5eb1` (testes e docs) |
+
+O System Link do edge tem cerca de 12 mil linhas, começou em 12/10 e ainda recebe correções
+diárias. Ele só pode ser testado com dois aparelhos. Os consertos de socket que tinham saído do
+lote 3 (`4e019f409`, `b62d6f9ed` e `0554993759`) não precisam dele e foram adaptados no lote 8.

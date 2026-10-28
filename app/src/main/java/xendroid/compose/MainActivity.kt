@@ -13,7 +13,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import xendroid.compose.ui.design.InputModePref
@@ -74,6 +73,10 @@ class MainActivity : ComponentActivity() {
         inputPref = InputModeStore.read(prefs)
     }
 
+    // The app's toasts, held here so the exit guard can show one too.
+    private val toast = XdToastState()
+    private val exitGuard = ExitGuard(toast, { getString(R.string.xd_exit_again, it) }) { onBackPressedDispatcher.onBackPressed() }
+
     /** 15l: before Android 13 the language chosen in the app is applied here. */
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(newBase)
@@ -109,12 +112,21 @@ class MainActivity : ComponentActivity() {
         if (xendroid.compose.gamepad.GamepadCapture.listener?.invoke(event) == true) return true
         // U04: A clicks and B goes back, or the other way round when the user swapped them.
         val code = xendroid.compose.gamepad.MenuButtons.frontendKey(event.keyCode,
-            xendroid.compose.gamepad.MenuButtonPrefs.swapConfirm(this)) ?: return super.dispatchKeyEvent(event)
-        val translated = KeyEvent(
+            xendroid.compose.gamepad.MenuButtonPrefs.swapConfirm(this))
+        val translated = if (code == null) event else KeyEvent(
             event.downTime, event.eventTime, event.action, code, event.repeatCount,
             event.metaState, event.deviceId, event.scanCode, event.flags, event.source,
         )
-        return super.dispatchKeyEvent(translated)
+        // A controller's Back: its B (A when swapped) turned into one, or a pad's own Back key.
+        val padBack = translated.keyCode == KeyEvent.KEYCODE_BACK &&
+            (code != null || event.isFromSource(android.view.InputDevice.SOURCE_GAMEPAD))
+        if (!padBack) return super.dispatchKeyEvent(translated)
+        exitGuard.arm(if (event.keyCode == KeyEvent.KEYCODE_BUTTON_A) "A" else "B")
+        try {
+            return super.dispatchKeyEvent(translated)
+        } finally {
+            exitGuard.disarm()
+        }
     }
 
     override fun dispatchGenericMotionEvent(event: android.view.MotionEvent): Boolean {
@@ -151,6 +163,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // First, under every Back the screens add; without an owner, so it is never re-added
+        // above them when the activity starts again.
+        onBackPressedDispatcher.addCallback(exitGuard)
 
         // Same intent shape as the in-app launch, which routes through the
         // manifest filter into the host's own task. Finishing here instead
@@ -206,7 +221,6 @@ class MainActivity : ComponentActivity() {
        setContent {
             // Controller mode follows a controller connecting and disconnecting (Automatic).
             val mode = inputPref.resolve(rememberControllerConnected())
-            val toast = remember { XdToastState() }
             CompositionLocalProvider(LocalInputMode provides mode, LocalXdToast provides toast) {
             xendroidTheme(scale = uiScale, mode = mode) {
 

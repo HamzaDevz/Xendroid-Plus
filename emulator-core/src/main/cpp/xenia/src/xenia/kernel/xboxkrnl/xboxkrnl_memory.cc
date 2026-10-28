@@ -11,6 +11,8 @@
 
 #include <atomic>
 #include "xenia/base/logging.h"
+#include "xenia/cpu/processor.h"
+#include "xenia/cpu/xex_module.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
@@ -814,6 +816,32 @@ dword_result_t KeGetImagePageTableEntry_entry(dword_t address,
     returned_value |= 1;
   }
 
+  // User mode maps a module from the PowerPC page protection in the low bits,
+  // PP in bits 0-1 and no-execute in bit 2. Only a title that enters user mode
+  // reads them, and bit 0 above means something else to the dashboard.
+  if (kernel_state->memory()->user_virtual_membase()) {
+    for (auto* module : kernel_state->processor()->GetModules()) {
+      auto* xex_module = dynamic_cast<cpu::XexModule*>(module);
+      xex2_section_type section_type;
+      if (!xex_module || xex_module->is_patch() ||
+          !xex_module->GetPageSectionType(address, &section_type)) {
+        continue;
+      }
+      switch (section_type) {
+        case XEX_SECTION_CODE:
+          returned_value = (returned_value & ~0b111u) | 0b011;
+          break;
+        case XEX_SECTION_DATA:
+          returned_value = (returned_value & ~0b111u) | 0b110;
+          break;
+        case XEX_SECTION_READONLY_DATA:
+          returned_value = (returned_value & ~0b111u) | 0b111;
+          break;
+      }
+      break;
+    }
+  }
+
   return returned_value & 0x400FFFFF;  // this is actually the mask it applies
                                        // to the final
   // result before returning it
@@ -872,6 +900,34 @@ dword_result_t MmIsAddressValid_entry(dword_t address,
 }
 
 DECLARE_XBOXKRNL_EXPORT1(MmIsAddressValid, kMemory, kImplemented);
+
+// A guest that writes code sweeps the instruction cache before running it, so
+// this is where anything already compiled from that memory has to be dropped.
+void KeSweepIcacheRange_entry(lpvoid_t address, dword_t length,
+                              const ppc_context_t& ctx) {
+  auto processor = ctx->processor;
+  // Only a title that compiles code at run time (a module importing
+  // KeCreateUserMode) can have changed what was compiled; for the others a
+  // sweep would only throw away good code.
+  if (!processor->dynamic_code_enabled()) {
+    return;
+  }
+  const uint32_t start = address.guest_address();
+  processor->InvalidateCodeRange(start, length);
+  // Code is written through whichever address space the writer runs in and
+  // run from the other, so the range has to be forgotten under both names.
+  const uint32_t kernel_start =
+      ctx->processor->memory()->UserModeKernelAddress(start);
+  if (kernel_start != start) {
+    processor->InvalidateCodeRange(kernel_start, length);
+  }
+  const uint32_t user_start = xe::Memory::KernelModeUserAddress(start);
+  if (user_start != start) {
+    processor->InvalidateCodeRange(user_start, length);
+  }
+}
+DECLARE_XBOXKRNL_EXPORT2(KeSweepIcacheRange, kMemory, kImplemented,
+                         kHighFrequency);
 
 }  // namespace xboxkrnl
 }  // namespace kernel

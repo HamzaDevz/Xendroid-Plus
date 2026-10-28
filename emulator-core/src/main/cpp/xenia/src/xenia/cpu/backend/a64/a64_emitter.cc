@@ -10,6 +10,7 @@
 #include "xenia/cpu/backend/a64/a64_emitter.h"
 
 #include <cstring>
+#include <unordered_set>
 
 #include "xenia/base/debugging.h"
 #include "xenia/base/logging.h"
@@ -58,6 +59,11 @@ using namespace Xbyak_aarch64;
 
 // Defined in a64_backend.cc.
 extern uint64_t ResolveFunction(void* raw_context, uint64_t target_address);
+extern uint64_t ResolveDynamicCall(void* raw_context, uint64_t target_address);
+extern uint64_t ResolveDirectDynamicCall(void* raw_context,
+                                         uint64_t target_address);
+extern uint64_t ResolveDynamicTailCall(void* raw_context,
+                                       uint64_t target_address);
 
 static uint64_t UndefinedCallExtern(void* raw_context, uint64_t function_ptr) {
   auto function = reinterpret_cast<Function*>(function_ptr);
@@ -581,7 +587,12 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
   ForgetFpcrMode();
   auto fn = static_cast<A64Function*>(function);
 
-  if (fn->machine_code()) {
+  // Calls to dynamic code look the target up every time, since a direct call
+  // would keep reaching the old copy once the code is rewritten.
+  const bool rewritable = processor()->dynamic_code_enabled() &&
+                          code_cache_->has_indirection_table() &&
+                          !code_cache_->HasIndirectionSlot(function->address());
+  if (fn->machine_code() && !rewritable) {
     // Direct call — function is already compiled.
     mov(x9, reinterpret_cast<uint64_t>(fn->machine_code()));
     if (!(instr->flags & hir::CALL_TAIL)) {
@@ -605,7 +616,8 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
     return;
   }
 
-  if (code_cache_->has_indirection_table()) {
+  if (code_cache_->has_indirection_table() &&
+      code_cache_->HasIndirectionSlot(function->address())) {
     // Must leave the guest address in w16 for the resolve thunk to read.
     mov(w16, function->address());
     if (!code_cache_->encoded_indirection()) {
@@ -617,26 +629,33 @@ void A64Emitter::Call(const hir::Instr* instr, GuestFunction* function) {
       Label external_target;
       Label indirection_ready;
 
-      mov(x14, code_cache_->indirection_table_base_bias());
+      ldr(x14, ptr(x19, static_cast<uint32_t>(offsetof(
+                            A64BackendContext, indirection_table_base_bias))));
       add(x14, x14, w16, UXTW);
       ldr(w9, ptr(x14, static_cast<uint32_t>(0)));
       tbnz(w9, 31, external_target);
 
       // Internal: rel32 from code cache base.
-      mov(x14, code_cache_->execute_base_address());
+      ldr(x14, ptr(x19, static_cast<uint32_t>(offsetof(
+                            A64BackendContext, code_cache_execute_base))));
       add(x9, x14, w9, UXTW);
       b(indirection_ready);
 
       // External: tagged index into the side table.
       L(external_target);
       and_(w15, w9, A64CodeCache::kIndirectionExternalIndexMask);
-      mov(x14, code_cache_->external_indirection_table_base_address());
+      ldr(x14,
+          ptr(x19, static_cast<uint32_t>(offsetof(
+                       A64BackendContext, external_indirection_table_base))));
       lsl(x15, x15, 3);
       add(x14, x14, x15);
       ldr(x9, ptr(x14, static_cast<uint32_t>(0)));
 
       L(indirection_ready);
     }
+  } else if (code_cache_->has_indirection_table()) {
+    mov(w16, function->address());
+    EmitDynamicCallLookup((instr->flags & hir::CALL_TAIL) != 0, true);
   } else {
     // No indirection table: resolve at runtime.
     mov(x0, x20);  // context
@@ -682,6 +701,26 @@ void A64Emitter::CallIndirect(const hir::Instr* instr, int reg_index) {
     if (target_w.getIdx() != w16.getIdx()) {
       mov(w16, target_w);
     }
+    // A target without an indirection slot goes through the dynamic call cache.
+    // Only dynamic code has such targets, and the check costs code cache space
+    // at every indirect call site, so titles without it do not pay for it.
+    Label* target_ready = nullptr;
+    if (processor()->dynamic_code_enabled()) {
+      target_ready = &NewCachedLabel();
+      // TODO(has207): while the base is 0x80000000, eor with it gives the same
+      // branch outcome in one instruction. Needs a static_assert on the base.
+      mov(w14, code_cache_->indirection_guest_base());
+      sub(w14, w16, w14);
+      mov(w15, code_cache_->indirection_guest_size());
+      cmp(w14, w15);
+      const bool tail_call = (instr->flags & hir::CALL_TAIL) != 0;
+      Label& resolve_natively =
+          AddToTail([target_ready, tail_call](A64Emitter& e, Label& lbl) {
+            e.EmitDynamicCallLookup(tail_call);
+            e.b(*target_ready);
+          });
+      b(HS, resolve_natively);
+    }
     if (!code_cache_->encoded_indirection()) {
       // Fast path: table mapped at host VA == guest addr; slot holds raw
       // 32-bit host target.
@@ -691,25 +730,32 @@ void A64Emitter::CallIndirect(const hir::Instr* instr, int reg_index) {
       Label external_target;
       Label indirection_ready;
 
-      mov(x14, code_cache_->indirection_table_base_bias());
+      ldr(x14, ptr(x19, static_cast<uint32_t>(offsetof(
+                            A64BackendContext, indirection_table_base_bias))));
       add(x14, x14, w16, UXTW);
       ldr(w9, ptr(x14, static_cast<uint32_t>(0)));
       tbnz(w9, 31, external_target);
 
       // Internal: rel32 from code cache base.
-      mov(x14, code_cache_->execute_base_address());
+      ldr(x14, ptr(x19, static_cast<uint32_t>(offsetof(
+                            A64BackendContext, code_cache_execute_base))));
       add(x9, x14, w9, UXTW);
       b(indirection_ready);
 
       // External: tagged index into the side table.
       L(external_target);
       and_(w15, w9, A64CodeCache::kIndirectionExternalIndexMask);
-      mov(x14, code_cache_->external_indirection_table_base_address());
+      ldr(x14,
+          ptr(x19, static_cast<uint32_t>(offsetof(
+                       A64BackendContext, external_indirection_table_base))));
       lsl(x15, x15, 3);
       add(x14, x14, x15);
       ldr(x9, ptr(x14, static_cast<uint32_t>(0)));
 
       L(indirection_ready);
+    }
+    if (target_ready) {
+      L(*target_ready);
     }
   } else {
     // No indirection table: resolve at runtime.
@@ -741,8 +787,40 @@ void A64Emitter::CallIndirect(const hir::Instr* instr, int reg_index) {
   }
 }
 
+// Whether a float or vector value defined before `call` is read after it.
+// Registers hold values only within a block, so only this block can. False
+// for CALL_EXTERN as it ends its block; this guards one that wouldn't.
+static bool FpValueLiveAcross(const hir::Instr* call) {
+  const auto is_fp = [](const hir::Value* v) {
+    return v->type == hir::FLOAT32_TYPE || v->type == hir::FLOAT64_TYPE ||
+           v->type == hir::VEC128_TYPE;
+  };
+  std::unordered_set<const hir::Value*> before;
+  for (const hir::Instr* i = call->block->instr_head; i != call; i = i->next) {
+    if (i->dest && is_fp(i->dest)) {
+      before.insert(i->dest);
+    }
+  }
+  if (before.empty()) {
+    return false;
+  }
+  bool live = false;
+  for (hir::Instr* i = call->next; i && !live; i = i->next) {
+    i->VisitValueOperands(
+        [&](hir::Value* v, uint32_t) { live |= before.count(v) != 0; });
+  }
+  return live;
+}
+
 void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
   ForgetFpcrMode();
+  // The no-vec thunk skips the q4-q31 save, which is right as long as no value
+  // lives in a vector register across the call (the thunk addresses are in
+  // the backend context: one ldr each).
+  const uint32_t thunk_offset = static_cast<uint32_t>(
+      FpValueLiveAcross(instr)
+          ? offsetof(A64BackendContext, guest_to_host_thunk_address)
+          : offsetof(A64BackendContext, guest_to_host_thunk_no_vec_address));
   bool undefined = true;
   if (function->behavior() == Function::Behavior::kBuiltin) {
     auto builtin_function = static_cast<const BuiltinFunction*>(function);
@@ -753,7 +831,7 @@ void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
       mov(x0, reinterpret_cast<uint64_t>(builtin_function->handler()));
       mov(x1, reinterpret_cast<uint64_t>(builtin_function->arg0()));
       mov(x2, reinterpret_cast<uint64_t>(builtin_function->arg1()));
-      mov(x9, reinterpret_cast<uint64_t>(backend()->guest_to_host_thunk()));
+      ldr(x9, ptr(x19, thunk_offset));
       blr(x9);
     }
   } else if (function->behavior() == Function::Behavior::kExtern) {
@@ -764,7 +842,7 @@ void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
       mov(x0, reinterpret_cast<uint64_t>(extern_function->extern_handler()));
       ldr(x1, ptr(GetContextReg(), static_cast<int32_t>(offsetof(
                                        ppc::PPCContext, kernel_state))));
-      mov(x9, reinterpret_cast<uint64_t>(backend()->guest_to_host_thunk()));
+      ldr(x9, ptr(x19, thunk_offset));
       blr(x9);
     }
   }
@@ -775,6 +853,46 @@ void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
   }
 }
 
+void A64Emitter::EmitDynamicCallLookup(bool tail, bool direct) {
+  const bool direct_call = direct && !tail;
+  Label miss;
+  Label done;
+  ldr(x14, ptr(x19, static_cast<uint32_t>(
+                        offsetof(A64BackendContext, dynamic_call_cache))));
+  cbz(x14, miss);
+  // Mirrors DynamicCallCacheIndex, which writes the entries this probes.
+  lsr(w15, w16, 2);
+  eor(w15, w15, w16, LSR, 14);
+  and_(w15, w15, kA64DynamicCallCacheSize - 1);
+  add(x14, x14, w15, UXTW, 4);
+  ldr(w15, ptr(x14, static_cast<uint32_t>(
+                        offsetof(A64DynamicCallCacheEntry, guest_address))));
+  cmp(w15, w16);
+  b(NE, miss);
+  if (!direct_call) {
+    // An entry a direct call cached skips the return site checks a branch
+    // needs (kA64DynamicCallAny is 0).
+    ldr(w15, ptr(x14, static_cast<uint32_t>(
+                          offsetof(A64DynamicCallCacheEntry, kind))));
+    cbnz(w15, miss);
+  }
+  ldr(x9, ptr(x14, static_cast<uint32_t>(
+                       offsetof(A64DynamicCallCacheEntry, host_address))));
+  // An entry the cache was initialized with holds no address.
+  cbz(x9, miss);
+  b(done);
+
+  L(miss);
+  // The host call can clobber x16, so hand the address over as its argument.
+  mov(w1, w16);
+  CallNativeSafe(reinterpret_cast<void*>(direct_call ? ResolveDirectDynamicCall
+                                         : tail      ? ResolveDynamicTailCall
+                                                     : ResolveDynamicCall));
+  mov(x9, x0);
+
+  L(done);
+}
+
 void A64Emitter::CallNative(void* fn) { CallNativeSafe(fn); }
 
 void A64Emitter::CallNativeSafe(void* fn) {
@@ -782,7 +900,8 @@ void A64Emitter::CallNativeSafe(void* fn) {
   // GuestToHostThunk: x0=target function, x1/x2=args (set by caller).
   // The thunk rearranges: saves x0 in x9, sets x0=context, calls x9.
   mov(x0, reinterpret_cast<uint64_t>(fn));
-  mov(x9, reinterpret_cast<uint64_t>(backend()->guest_to_host_thunk()));
+  ldr(x9, ptr(x19, static_cast<uint32_t>(offsetof(
+                       A64BackendContext, guest_to_host_thunk_address))));
   blr(x9);
 }
 
@@ -871,7 +990,8 @@ void A64Emitter::EmitPreemptCheck(uint32_t guest_address) {
           reinterpret_cast<uint64_t>(&xe::cpu::backend::preempt_yield_handler));
     e.ldr(e.x0, ptr(e.x0));
     e.cbz(e.x0, after);
-    e.mov(e.x9, reinterpret_cast<uint64_t>(e.backend()->guest_to_host_thunk()));
+    e.ldr(e.x9, ptr(e.x19, static_cast<uint32_t>(offsetof(
+                               A64BackendContext, guest_to_host_thunk_address))));
     e.blr(e.x9);
     e.b(after);
   });

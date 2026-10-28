@@ -121,8 +121,9 @@ suspend fun checkForUpdates(context: Context): UpdateResult {
     Log.d("Updater", "Checking $owner/$repo ($channel)")
     val releases = if (channel == UpdateChannel.PREVIEW) api.releases(owner, repo) else listOf(api.latestRelease(owner, repo))
     val skipped = prefs(context).getInt(KEY_SKIPPED, 0).takeIf { it > 0 }
+    // The commit, not the version name: published builds are named by version now.
     val offer = chooseUpdate(releases.map { it.toFeed() }, channel, BuildConfig.VERSION_CODE,
-        BuildConfig.VERSION_NAME.lowercase(), skipped)
+        BuildConfig.BUILD_BASE_COMMIT.lowercase(), skipped)
     return offer?.let { UpdateResult.Available(it) } ?: UpdateResult.Latest(BuildConfig.VERSION_NAME)
 }
 

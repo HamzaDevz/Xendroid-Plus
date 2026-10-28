@@ -24,18 +24,21 @@ namespace cpu {
 thread_local ThreadState* thread_state_ = nullptr;
 
     struct PackedContext {
-        XE_MAYBE_UNUSED uint64_t backend_data[32];//分配256字节給CPU后端使用
+        // The backend's per-thread context (backend::kBackendContextReserve).
+        XE_MAYBE_UNUSED uint8_t backend_data[backend::kBackendContextReserve];
         ppc::PPCContext ctx;
     };
 
-    static_assert(sizeof(PackedContext) == sizeof(ppc::PPCContext)+256);
+    static_assert(sizeof(PackedContext) ==
+                  sizeof(ppc::PPCContext) + backend::kBackendContextReserve);
     static void* AllocateContext() {
         PackedContext* ptr=memory::AlignedAlloc<PackedContext>(64);
         return &ptr->ctx;
     }
 
     static void FreeContext(void* ctx) {
-        void* ptr=reinterpret_cast<uint8_t*>( ctx)-256;
+        void* ptr = reinterpret_cast<uint8_t*>(ctx) -
+                    backend::kBackendContextReserve;
         memory::AlignedFree(ptr);
     }
 

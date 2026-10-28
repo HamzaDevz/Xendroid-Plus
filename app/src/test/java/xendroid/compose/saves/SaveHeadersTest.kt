@@ -45,6 +45,7 @@ class SaveHeadersTest {
         File(File(saves, "CAMPAIGN"), "a").setLastModified(5_000_000L)
         File(File(saves, "CAMPAIGN"), "b").setLastModified(4_000_000L)
         File(headers, "CAMPAIGN.header").writeBytes(header("Campanha · Lendário", "CAMPAIGN"))
+        File(saves, ".xd-unpack-CAMPAIGN").apply { mkdirs(); File(this, "a").writeBytes(ByteArray(16)) }
         val list = SaveHeaders.list(root, xuid.lowercase(), "4d5307e6")
         assertEquals(listOf("CAMPAIGN", "PROFILE"), list.map { it.file })
         assertEquals("Campanha · Lendário", list[0].displayName)

@@ -161,12 +161,14 @@ class XFile : public XObject {
                        uint64_t byte_offset, uint32_t* out_bytes_read,
                        uint32_t apc_context);
 
+  // Write() appends when given this offset.
+  static constexpr uint64_t kEndOfFile = uint64_t(1) << 63;
   X_STATUS Write(uint32_t buffer_guess_address, uint32_t buffer_length,
                  uint64_t byte_offset, uint32_t* out_bytes_written,
                  uint32_t apc_context);
 
   X_STATUS SetLength(size_t length);
-  X_STATUS Rename(const std::filesystem::path file_path);
+  X_STATUS Rename(const std::filesystem::path file_path, bool replace_existing);
 
   void RegisterIOCompletionPort(uint32_t key, object_ref<XIOCompletion> port);
   void RemoveIOCompletionPort(uint32_t key);

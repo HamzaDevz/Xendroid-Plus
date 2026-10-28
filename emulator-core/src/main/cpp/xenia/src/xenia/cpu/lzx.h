@@ -23,7 +23,9 @@ int lzx_decompress(const void* lzx_data, size_t lzx_len, void* dest,
                    size_t dest_len, uint32_t window_size, void* window_data,
                    size_t window_data_len);
 
+// Applies the delta patch records in the first patch_len bytes at patch to the
+// dest_len bytes at dest, or none of them if any reaches outside either.
 int lzxdelta_apply_patch(xe::xex2_delta_patch* patch, size_t patch_len,
-                         uint32_t window_size, void* dest);
+                         uint32_t window_size, void* dest, size_t dest_len);
 
 #endif  // XENIA_CPU_LZX_H_
