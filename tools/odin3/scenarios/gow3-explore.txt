@@ -1,0 +1,29 @@
+# Gears of War 3: maps the boot (logos, title, profile prompts) with a screenshot every 15 s, pressing Start/A on
+# the title screens. KEEP=1 to carry on by hand.
+rom Gears of War 3 (World) (En,Fr,Pt,Zh,Ko,Pl,Ru,Cs,Hu).iso
+title 4D5308AB
+wait 20
+shot t020
+wait 15
+shot t035
+wait 15
+shot t050
+btn a
+wait 15
+shot t065
+btn start
+wait 15
+shot t080
+btn a
+wait 15
+shot t095
+btn start
+wait 15
+shot t110
+btn a
+wait 15
+shot t125
+measure menu
+wait 30
+end
+shot t160

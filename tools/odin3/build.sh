@@ -38,6 +38,10 @@ EOF
 APK=$(sed -n 's/^apk \(.*\.apk\) [0-9]*$/\1/p' $OUT/build.log | tail -1)
 [ -n "$APK" ] || { echo "no apk, see $OUT/build.log"; exit 1; }
 scp -q "pc5080:${APK//\\//}" $OUT/unsigned.apk 2>&1 | quiet
+# The unstripped core of this build, for prof.sh
+mkdir -p $OUT/syms
+scp -q 'pc5080:C:/x/xp/app/build/intermediates/merged_native_libs/release/mergeReleaseNativeLibs/out/lib/arm64-v8a/libe.so' \
+  $OUT/syms/libe.so 2>&1 | quiet
 # Signed with this Mac's debug key, so updates install over each other
 BT=~/Library/Android/sdk/build-tools/35.0.0
 $BT/zipalign -f -p 4 $OUT/unsigned.apk $OUT/aligned.apk &&
