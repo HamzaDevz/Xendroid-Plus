@@ -248,6 +248,16 @@ static const Quirk kQuirks[] = {
      "4x depth-only shadow draws into the 1x surface of their samples"},
     {0x4D5308AB, "vulkan_samples_as_pixels_simple_ps", true,
      "4x draws with simple pixel shaders into the 1x surface"},
+    // Its render thread waits for ring buffer space (the read pointer at
+    // +0x2B10, the title's 5000 ms hang timeout) about 10 ms a frame at 60
+    // fps with the Unlock FPS patch. Parked instead of spinning: Guest CPU 3
+    // 94% -> 47% of a core, 0.6 to 2.9 W less and the CPU 2 to 10 C cooler,
+    // the same fps and frame pacing in the cutscene and the ship of act 1
+    // (two A/B pairs on the Odin 3, 2026-10-28).
+    {0x4D5308AB, "spin_park_guest_functions", "82AF98D8:C16C7B283EF7240C",
+     "the Direct3D GPU wait parks instead of spinning"},
+    {0x4D5308AB, "spin_park_mode", int64_t(1),
+     "the Direct3D GPU wait parks instead of spinning"},
     // Crysis 3 (CryENGINE 3) moves one 1350-tile depth surface between 1x and
     // 4x MSAA 47 times each way a frame on the deck of its first checkpoint:
     // 156 transfers (45100 tiles) and 211 render passes a frame, GPU-bound at
