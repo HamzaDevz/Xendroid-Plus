@@ -1,0 +1,142 @@
+# Gears of War 3: gow3-ship, then ~9 min walking back and forth in the ship in five segments, to see whether 60 fps
+# holds once the console is hot (Unlock FPS patch: PATCHES=1 TARGET=60).
+rom Gears of War 3 (World) (En,Fr,Pt,Zh,Ko,Pl,Ru,Cs,Hu).iso
+title 4D5308AB
+wait 45
+btn a
+wait 4
+btn a
+wait 6
+shot title
+btn start
+wait 12
+btn a
+wait 6
+shot menu
+btn a
+wait 3
+btn a
+wait 3
+btn a
+wait 4
+btn a
+wait 40
+shot cutscene
+measure cutscene
+wait 20
+end
+wait 20
+shot ship
+measure ship-still
+wait 20
+end
+measure soak1
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+end
+measure soak2
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+end
+measure soak3
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+end
+measure soak4
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+end
+measure soak5
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+stick 0 -32767 8000
+rstick 20000 0 1500
+end
