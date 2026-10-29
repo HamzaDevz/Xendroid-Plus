@@ -1935,6 +1935,11 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
                   swapchain_effect, paint_context_.swapchain_render_pass);
           if (swapchain_effect_pipeline.swapchain_pipeline == VK_NULL_HANDLE) {
             guest_output_flow.effect_count = 0;
+          } else {
+            // Without it the format check above destroys the pipeline on the
+            // next paint: a GPU wait and a driver compile every frame.
+            swapchain_effect_pipeline.swapchain_format =
+                paint_context_.swapchain_render_pass_format;
           }
         }
       }

@@ -258,6 +258,17 @@ static const Quirk kQuirks[] = {
      "the Direct3D GPU wait parks instead of spinning"},
     {0x4D5308AB, "spin_park_mode", int64_t(1),
      "the Direct3D GPU wait parks instead of spinning"},
+    // At 60 fps it is GPU-bound once the console is hot (52-58 fps after a few
+    // minutes, the GPU throttled from 1100 to ~1030 MHz). Standing in the
+    // ship, GPU time 15.1 -> 14.0 ms per frame without the pixel shader math
+    // emulation and 15.1 -> 14.5 ms with the 7e3 scene color in 32 bpp, the
+    // same image in the cutscene and the ship (Odin 3, 2026-10-29). Host
+    // alpha to coverage and the resolve clears in the guest pass changed
+    // nothing there.
+    {0x4D5308AB, "spirv_ps_relaxed_math", int64_t(11),
+     "no SM3 zero-multiply or 21-bit rounding emulation in pixel shaders"},
+    {0x4D5308AB, "render_target_7e3_as_r11g11b10", true,
+     "7e3 scene color in 32 bpp"},
     // Crysis 3 (CryENGINE 3) moves one 1350-tile depth surface between 1x and
     // 4x MSAA 47 times each way a frame on the deck of its first checkpoint:
     // 156 transfers (45100 tiles) and 211 render passes a frame, GPU-bound at
